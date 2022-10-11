@@ -1,0 +1,56 @@
+{
+  "canisters": {
+    "ICOracleTest": {
+      "main": "./ICOracle.mo",
+      "type": "motoko",
+      "args" : "--compacting-gc"
+    },
+    "ICOracle": {
+      "main": "./ICOracle.mo",
+      "type": "motoko",
+      "args" : "--compacting-gc"
+    },
+    "EventsTest": {
+      "main": "./Events.mo",
+      "type": "motoko",
+      "args" : "--compacting-gc"
+    },
+    "Events": {
+      "main": "./Events.mo",
+      "type": "motoko",
+      "args" : "--compacting-gc"
+    },
+    "OT": {
+      "main": "./Token/Token.mo",
+      "type": "motoko",
+      "args" : "--compacting-gc"
+    },
+    "Mining": {
+      "main": "./Token/Mining.mo",
+      "type": "motoko",
+      "args" : "--compacting-gc"
+    },
+    "ICDAO": {
+      "main": "./DAO/ICDAO.mo",
+      "type": "motoko",
+      "args" : "--compacting-gc"
+    },
+    "Example": {
+      "main": "./examples/Example.mo",
+      "type": "motoko",
+      "args" : "--compacting-gc"
+    }
+    
+  },
+  "dfx": "0.11.2",
+  "networks": {
+    "ic": {
+      "providers": ["https://ic0.app"],
+      "type": "persistent"
+    },
+    "local": {
+      "bind": "0.0.0.0:8000",
+      "type": "ephemeral"
+    }
+  }
+}

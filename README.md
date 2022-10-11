@@ -106,6 +106,10 @@ ICOracle data feeds will have a wide range of applications in the web3 sector, s
 
 Visit: [/Token/README.md](/Token/README.md)
 
+## Docs
+
+[ICOracle Reference](/docs/ICOracleReference.md)
+
 ## Roadmap
 
 - October 2022: launch of website and OnePaper doc; open source alpha version of smart contract and interface; issue token $OT; organization of airdrop events.

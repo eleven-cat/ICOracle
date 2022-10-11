@@ -1,0 +1,65 @@
+type VolatilityResponse = record {
+   average: nat;
+   close: nat;
+   decimals: nat;
+   high: nat;
+   low: nat;
+   open: nat;
+   percent: float64;
+};
+type Timestamp = nat;
+type SeriesInfo = record {
+   cacheDuration: nat;
+   conDuration: nat;
+   conMaxDevRate: nat;
+   conMinRequired: nat;
+   decimals: nat;
+   heartbeat: nat;
+   name: text;
+};
+type SeriesId = nat;
+type RequestLog = record {
+   provider: principal;
+   request: DataItem;
+   signature: opt blob;
+   time: Timestamp;
+};
+type Provider = principal;
+type Log = record {
+   confirmed: bool;
+   requestLogs: vec RequestLog;
+};
+type HttpHeader = record {
+   name: text;
+   value: text;
+};
+type DataResponse = record {
+   data: record { Timestamp; nat; };
+   decimals: nat;
+   name: text;
+   sid: SeriesId;
+};
+type DataItem = record {
+   timestamp: Timestamp;
+   value: nat;
+};
+type CanisterHttpResponsePayload = record {
+   body: vec nat8;
+   headers: vec HttpHeader;
+   status: nat;
+};
+type ICOracle = service {
+   anon_get: (SeriesId, opt Timestamp) -> (opt record { data: record { Timestamp; nat; }; decimals: nat; }) query;
+   anon_getSeries: (SeriesId, opt nat) -> (record { data: vec record { Timestamp; nat; }; decimals: nat; }) query;
+   anon_latest: () -> (vec record { data: record { Timestamp; nat; }; decimals: nat; name: text;sid: SeriesId;}) query;
+   get: (SeriesId, opt Timestamp) -> (opt record { data: record { Timestamp; nat;}; decimals: nat;});
+   getSeries: (SeriesId, opt nat) -> (record { data: vec record { Timestamp; nat; }; decimals: nat;});
+   latest: () -> (vec DataResponse);
+   volatility: (SeriesId, nat) -> (VolatilityResponse);
+   getFee: () -> (nat) query;
+   getLog: (SeriesId, opt Timestamp) -> (opt Log) query;
+   getSeriesInfo: (SeriesId) -> (opt SeriesInfo) query;
+   getWorkload: (Provider) -> (opt record { nat; nat; }) query;
+   request: (SeriesId, DataItem, opt blob) -> (bool);
+};
+service : () -> ICOracle
