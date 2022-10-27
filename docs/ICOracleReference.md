@@ -1,10 +1,28 @@
 # ICOracle Reference
 
+## Changelist
+
+### v0.3 Alpha
+
+- Fix Bugs
+- Fetching data using https outcall
+- Refactoring SeriesInfo data type
+- Refactoring latest() and anon_latest() functions
+- Support for http_request query data
+- Support for 24 Currencies(XDR/USD,EUR/USD,GBP/USD,JPY/USD,AUD/USD,CHF/USD,NZD/USD,CAD/USD,HKD/USD,SGD/USD,CNY/USD,KRW/USD,TRY/USD,INR/USD,RUB/USD,MXN/USD,ZAR/USD,SEK/USD,DKK/USD,THB/USD,VND/USD,MYR/USD,TWD/USD,BRL/USD) rate data
+
+### v0.2 Alpha
+
+- Initial version
+- Support for ICP/USD Data Feeds
+
 ## ICOracle Canister
 
 CanisterId: pncff-zqaaa-aaaai-qnp3a-cai
 
 ### DID
+
+[../icoracle.did](../icoracle.did)
 
 ```
 type VolatilityResponse = record {
@@ -18,6 +36,7 @@ type VolatilityResponse = record {
 };
 type Timestamp = nat;
 type SeriesInfo = record {
+   base: text;
    cacheDuration: nat;
    conDuration: nat;
    conMaxDevRate: nat;
@@ -25,6 +44,7 @@ type SeriesInfo = record {
    decimals: nat;
    heartbeat: nat;
    name: text;
+   quote: text;
 };
 type SeriesId = nat;
 type RequestLog = record {
@@ -57,14 +77,31 @@ type CanisterHttpResponsePayload = record {
    headers: vec HttpHeader;
    status: nat;
 };
+type OutCallAPI = record {
+   host: text;
+   key: text;
+   name: text;
+   url: text;
+};
+type Category = variant {
+   Commodity;
+   Crypto;
+   Currency;
+   Economy;
+   Other;
+   Social;
+   Sports;
+   Stock;
+   Weather;
+};
 type ICOracle = service {
    anon_get: (SeriesId, opt Timestamp) -> (opt record { data: record { Timestamp; nat; }; decimals: nat; }) query;
-   anon_getSeries: (SeriesId, page: opt nat) -> (record { data: vec record { Timestamp; nat; }; decimals: nat; }) query;
-   anon_latest: () -> (vec record { data: record { Timestamp; nat; }; decimals: nat; name: text;sid: SeriesId;}) query;
+   anon_getSeries: (SeriesId, opt nat) -> (record { data: vec record { Timestamp; nat; }; decimals: nat; }) query;
+   anon_latest: (Category) -> (vec record { data: record { Timestamp; nat; }; decimals: nat; name: text;sid: SeriesId;}) query;
    get: (SeriesId, opt Timestamp) -> (opt record { data: record { Timestamp; nat;}; decimals: nat;});
-   getSeries: (SeriesId, page: opt nat) -> (record { data: vec record { Timestamp; nat; }; decimals: nat;});
-   latest: () -> (vec DataResponse);
-   volatility: (SeriesId, period: nat) -> (VolatilityResponse);
+   getSeries: (SeriesId, opt nat) -> (record { data: vec record { Timestamp; nat; }; decimals: nat;});
+   latest: (Category) -> (vec DataResponse);
+   volatility: (SeriesId, nat) -> (VolatilityResponse);
    getFee: () -> (nat) query;
    getLog: (SeriesId, opt Timestamp) -> (opt Log) query;
    getSeriesInfo: (SeriesId) -> (opt SeriesInfo) query;
@@ -100,7 +137,7 @@ anon_getSeries: (SeriesId, page: opt nat) -> (record { data: vec record { Timest
 ### anon_latest
 Returns the latest data items for all series data by anonymous account query.
 ```
-anon_latest: () -> (vec record { data: record { Timestamp; nat; }; decimals: nat; name: text;sid: SeriesId;}) query;
+anon_latest: (Category) -> (vec record { data: record { Timestamp; nat; }; decimals: nat; name: text;sid: SeriesId;}) query;
 ```
 
 ### get
@@ -118,7 +155,7 @@ getSeries: (SeriesId, page: opt nat) -> (record { data: vec record { Timestamp; 
 ### latest
 Returns the latest data items for all series data. A fee will be charged for this call.
 ```
-latest: () -> (vec record { data: record { Timestamp; nat; }; decimals: nat; name: text;sid: SeriesId;}) query;
+latest: (Category) -> (vec record { data: record { Timestamp; nat; }; decimals: nat; name: text;sid: SeriesId;}) query;
 ```
 
 ### volatility
@@ -128,7 +165,7 @@ volatility: (SeriesId, period: nat) -> (VolatilityResponse);
 ```
 
 ### getFee
-Returns base fee, charged in tokens OT.
+Returns base fee, charged in token OT.
 ```
 getFee: () -> (nat) query;
 ```
@@ -156,6 +193,25 @@ Oracle submits data item, optionally adding a signature.
 ```
 request: (SeriesId, DataItem, opt blob) -> (bool);
 ```
+
+## HTTP Request
+
+### https://pncff-zqaaa-aaaai-qnp3a-cai.raw.ic0.app/{BaseToken}/{QuoteToken}
+Enter `{BaseToken}` and `{QuoteToken}` in upper case.  
+e.g. https://pncff-zqaaa-aaaai-qnp3a-cai.raw.ic0.app/ICP/USD  
+returns:
+```
+{"success": {"base": "ICP", "quote": "USD", "rate": 5.306500, "timestamp": 1666852332 }}
+```
+
+### https://pncff-zqaaa-aaaai-qnp3a-cai.raw.ic0.app/{sid}
+Enter `{sid}` with `sid` of series data.  
+e.g. https://pncff-zqaaa-aaaai-qnp3a-cai.raw.ic0.app/2  
+returns:
+```
+{"success": {"base": "ICP", "quote": "USD", "rate": 5.306500, "timestamp": 1666852332 }}
+```
+
 
 ## Fee Model 
 

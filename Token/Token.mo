@@ -87,6 +87,7 @@ shared(installMsg) actor class DRC20(initArgs: Types.InitArgs) = this {
     private stable var symbol_: Text = Option.get(initArgs.symbol, "");
     private stable let decimals_: Nat8 = initArgs.decimals;
     private stable var totalSupply_: Nat = initArgs.totalSupply;
+    private stable var maxSupply_ : ?Nat = null;
     private stable var totalCoinSeconds: CoinSeconds = {coinSeconds = 0; updateTime = Time.now()};
     private stable var fee_: Nat = initArgs.fee;
     private stable var metadata_: [Metadata] = Option.get(initArgs.metadata, []);
@@ -828,6 +829,13 @@ shared(installMsg) actor class DRC20(initArgs: Types.InitArgs) = this {
             };
         };
     };
+    // max supply
+    private func _validateMaxSupply(_value: Nat) : Bool{
+        switch(maxSupply_){
+            case(?(supply)){ return totalSupply_ + _value <= supply; };
+            case(_){ return true; };
+        };
+    };
 
     /* 
     * Shared Functions
@@ -1135,6 +1143,14 @@ shared(installMsg) actor class DRC20(initArgs: Types.InitArgs) = this {
         fee_ := _fee;
         return true;
     };
+    public shared(msg) func ictokens_setMaxSupply(_supply: Nat) : async Bool{
+	    assert(_onlyOwner(msg.caller));
+        if (Option.isSome(maxSupply_)){
+            maxSupply_ := ?_supply;
+            return true;
+        };
+        return false;
+    };
 
     /*
     * Extended functions
@@ -1147,6 +1163,7 @@ shared(installMsg) actor class DRC20(initArgs: Types.InitArgs) = this {
     //private stable var lastMinted_ : (Time.Time, AccountId, Nat) = (0, AID.blackhole(), 0);
     public shared(msg) func ictokens_mint(_to:Address, _value: Amount, _nonce: ?Nonce, _data: ?Data) : async (result: TxnResult) { //icl
         assert(_onlyMiner(msg.caller));
+        assert(_validateMaxSupply(_value));
         let from = AID.blackhole();
         let to = _getAccountId(_to);
         let operation: Operation = #transfer({ action = #mint; });
@@ -1180,6 +1197,10 @@ shared(installMsg) actor class DRC20(initArgs: Types.InitArgs) = this {
         // return
         return res;
     };
+    /// max supply
+    public query func ictokens_maxSupply() : async ?Nat{
+        return maxSupply_;
+    }; 
     /// top100
     public query func ictokens_top100() : async [(Address, Nat)]{
         return Array.map<(AccountId, Nat), (Address, Nat)>(AID.slice(top100_, 0, ?99), func (item: (AccountId, Nat)): (Address, Nat){
@@ -1256,10 +1277,9 @@ shared(installMsg) actor class DRC20(initArgs: Types.InitArgs) = this {
     };
 
     // DRC204
-    private stable var icdex_pair : Principal = Principal.fromText("aaaaa-aa");
     public shared(msg) func icdex_create() : async Principal{
         assert(_onlyOwner(msg.caller));
-        icdex_pair := await DRC204.icdex_create();
+        let icdex_pair = await DRC204.icdex_create();
         return icdex_pair;
     };
     public shared func drc204_pairs() : async [(Principal, (DRC204.SwapPair, Nat))]{

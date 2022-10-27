@@ -29,6 +29,7 @@ import Error "mo:base/Error";
 import Trie "./lib/Trie";
 import Tools "./lib/ICLighthouse/Tools";
 import Minting "./lib/CyclesMinting";
+import ICHTTP "./lib/ICHTTP";
 import DRC207 "./lib/ICLighthouse/DRC207";
 import IC "./lib/IC";
 import ICSRouter "./lib/ICLighthouse/ICSwapRouter";
@@ -58,14 +59,15 @@ shared(installMsg) actor class ICOracle() = this {
     private let icdexRouter = "ltyfs-qiaaa-aaaak-aan3a-cai";
     private let sonicRouter = "3xwpq-ziaaa-aaaah-qcn4a-cai";
     private let MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+    private stable var setting_apilayer: T.OutCallAPI = { name="";host="";url="";key=""; };
     private stable var fee: Nat = 0; //  100000000 OT 
     private stable var owner: Principal = installMsg.caller;
     private stable var providers = List.nil<(Provider, [SeriesId], [Principal])>();
     private stable var workloads: Trie.Trie<Provider, (score: Nat, invalid: Nat)> = Trie.empty();
     private stable var index: Nat = 3;
     private stable var seriesInfo: Trie.Trie<SeriesId, (SeriesInfo, Timestamp)> = Trie.empty();
-    private stable var series: Trie.Trie2D<SeriesId, HeartbeatId, Nat> = Trie.empty();
-    private stable var logs: Trie.Trie2D<SeriesId, HeartbeatId, Log> = Trie.empty();
+    private stable var seriesData: Trie.Trie2D<SeriesId, HeartbeatId, DataItem> = Trie.empty();
+    private stable var requestLogs: Trie.Trie2D<SeriesId, HeartbeatId, Log> = Trie.empty();
     private stable var dexs: Trie.Trie<Text, Principal> = Trie.empty();
 
     // query from trie
@@ -129,24 +131,38 @@ shared(installMsg) actor class ICOracle() = this {
         if (info.heartbeat == 0){
             return ();
         };
-        switch(Trie.get(series, keyn(_sid), Nat.equal)){
+        switch(Trie.get(seriesData, keyn(_sid), Nat.equal)){
             case(?(trie)){
-                let temp = Trie.filter(trie, func (k:HeartbeatId, v:Nat): Bool{ _now() < k * info.heartbeat + info.cacheDuration });
-                series := Trie.put(series, keyn(_sid), Nat.equal, temp).0;
+                let temp = Trie.filter(trie, func (k:HeartbeatId, v:DataItem): Bool{ _now() < k * info.heartbeat + info.cacheDuration });
+                seriesData := Trie.put(seriesData, keyn(_sid), Nat.equal, temp).0;
             };
             case(_){};
         };
-        switch(Trie.get(logs, keyn(_sid), Nat.equal)){
+        switch(Trie.get(requestLogs, keyn(_sid), Nat.equal)){
             case(?(trie)){
                 let temp = Trie.filter(trie, func (k:HeartbeatId, v:Log): Bool{ _now() < k * info.heartbeat + info.conDuration });
-                logs := Trie.put(logs, keyn(_sid), Nat.equal, temp).0;
+                requestLogs := Trie.put(requestLogs, keyn(_sid), Nat.equal, temp).0;
             };
             case(_){};
         };
     };
     private func _chargeFee(_account: Principal, _num: Nat) : (){
+        // TODO
         // free for whiltelist
         // balance[_account] - _num*fee;
+    };
+    private func _categoryCheck(_cat: T.Category, _sid: Nat) : Bool{
+        switch(_cat){
+            case(#Crypto){ _sid >= 0 and _sid <= 999 };
+            case(#Currency){ _sid >= 1000 and _sid <= 1999 };
+            case(#Commodity){ _sid >= 2000 and _sid <= 2999 };
+            case(#Stock){ _sid >= 3000 and _sid <= 9999 };
+            case(#Economy){ _sid >= 10000 and _sid <= 19999 };
+            case(#Weather){ _sid >= 20000 and _sid <= 29999 };
+            case(#Other){ _sid >= 30000 and _sid <= 99999 };
+            case(#Sports){ _sid >= 100000 and _sid <= 999999 };
+            case(#Social){ _sid >= 1000000 and _sid <= 9999999 };
+        };
     };
     private func _getSeries(_sid: SeriesId, _page: Nat, _periodSeconds: Nat): [(Timestamp, Nat)]{
         var info: SeriesInfo = _getSeriesInfo(_sid);
@@ -155,10 +171,10 @@ shared(installMsg) actor class ICOracle() = this {
         };
         var start: Nat = _now() / info.heartbeat;
         var period = _periodSeconds / info.heartbeat + 1;
-        switch(Trie.get(series, keyn(_sid), Nat.equal)){ 
+        switch(Trie.get(seriesData, keyn(_sid), Nat.equal)){ 
             case(?(trie)){
-                return Array.map<(HeartbeatId, Nat), (Timestamp, Nat)>(triePage<Nat>(trie, start, _page, period), 
-                    func (t: (HeartbeatId, Nat)): (Timestamp, Nat){ (t.0 * info.heartbeat, t.1) }
+                return Array.map<(HeartbeatId, DataItem), (Timestamp, Nat)>(triePage<DataItem>(trie, start, _page, period), 
+                    func (t: (HeartbeatId, DataItem)): (Timestamp, Nat){ (t.1.timestamp, t.1.value) }
                 );
             };
             case(_){
@@ -172,11 +188,11 @@ shared(installMsg) actor class ICOracle() = this {
             return null;
         };
         var pid = _ts / info.heartbeat;
-        switch(Trie.get(series, keyn(_sid), Nat.equal)){
+        switch(Trie.get(seriesData, keyn(_sid), Nat.equal)){
             case(?(trie)){
                 while(pid >= _getSeriesCreationTime(_sid) / info.heartbeat){
                     switch(Trie.get(trie, keyn(pid), Nat.equal)){
-                        case(?(v)){ return ?(pid * info.heartbeat, v); };
+                        case(?(v)){ return ?(v.timestamp, v.value); };
                         case(_){
                             pid -= 1;
                         };
@@ -189,12 +205,12 @@ shared(installMsg) actor class ICOracle() = this {
             };
         };
     };
-    private func _setDataItem(_sid: SeriesId, _pid: HeartbeatId, _value: Nat): (){
-        series := Trie.put2D(series, keyn(_sid), Nat.equal, keyn(_pid), Nat.equal, _value);
+    private func _setDataItem(_sid: SeriesId, _pid: HeartbeatId, _value: DataItem): (){
+        seriesData := Trie.put2D(seriesData, keyn(_sid), Nat.equal, keyn(_pid), Nat.equal, _value);
         _clearCache(_sid);
     };
     private func _getLog(_sid: SeriesId, _pid: HeartbeatId): ?Log{
-        switch(Trie.get(logs, keyn(_sid), Nat.equal)){
+        switch(Trie.get(requestLogs, keyn(_sid), Nat.equal)){
             case(?(trie)){
                 switch(Trie.get(trie, keyn(_pid), Nat.equal)){
                     case(?(v)){
@@ -213,13 +229,13 @@ shared(installMsg) actor class ICOracle() = this {
     private func _requestData(_sid: SeriesId, _pid: HeartbeatId, _item: RequestLog): (){
         switch(_getLog(_sid, _pid)){
             case(?(log)){
-                logs := Trie.put2D(logs, keyn(_sid), Nat.equal, keyn(_pid), Nat.equal, {
+                requestLogs := Trie.put2D(requestLogs, keyn(_sid), Nat.equal, keyn(_pid), Nat.equal, {
                     confirmed = log.confirmed;
                     requestLogs = Tools.arrayAppend(log.requestLogs, [_item]);
                 });
             };
             case(_){
-                logs := Trie.put2D(logs, keyn(_sid), Nat.equal, keyn(_pid), Nat.equal, {
+                requestLogs := Trie.put2D(requestLogs, keyn(_sid), Nat.equal, keyn(_pid), Nat.equal, {
                     confirmed = false;
                     requestLogs = [_item]; 
                 });
@@ -230,7 +246,7 @@ shared(installMsg) actor class ICOracle() = this {
     private func _confirmData(_sid: SeriesId, _pid: HeartbeatId): (){
         switch(_getLog(_sid, _pid)){
             case(?(log)){
-                logs := Trie.put2D(logs, keyn(_sid), Nat.equal, keyn(_pid), Nat.equal, {
+                requestLogs := Trie.put2D(requestLogs, keyn(_sid), Nat.equal, keyn(_pid), Nat.equal, {
                     confirmed = true;
                     requestLogs = log.requestLogs; 
                 });
@@ -255,6 +271,8 @@ shared(installMsg) actor class ICOracle() = this {
     private func _getSeriesInfo(_sid: SeriesId): SeriesInfo{
         var info: SeriesInfo = {
             name = "";
+            base = "";
+            quote = "";
             decimals = 0;
             heartbeat = 0; // seconds
             conMaxDevRate = 0; // ‱ permyriad
@@ -283,21 +301,24 @@ shared(installMsg) actor class ICOracle() = this {
         //check 
         assert(_now() < _request.request.timestamp + info.conDuration);
         _setWorkload(_account, ?1, null);
+        var puted : Bool = false;
         switch(_getLog(_sid, pid)){
             case(?(log)){
-                if (Option.isSome(Array.find(log.requestLogs, func (t:RequestLog):Bool{ t.provider == _request.provider }))) { assert(false); };
+                if (Option.isSome(Array.find(log.requestLogs, func (t:RequestLog):Bool{ t.provider == _request.provider }))) { puted := true; };
                 if (log.confirmed) { return true; };
             };
             case(_){};
         };
         //put
-        _requestData(_sid, pid, _request);
+        if (not(puted)){
+            _requestData(_sid, pid, _request);
+        };
         //cons
         return _consensus(_sid, pid);
     };
     private func _consensus(_sid: SeriesId, _pid: HeartbeatId) : (confirmed: Bool){
         var info: SeriesInfo = _getSeriesInfo(_sid);
-        if (info.heartbeat == 0){
+        if (info.heartbeat == 0){ 
             assert(false);
         };
         switch(_getLog(_sid, _pid)){
@@ -324,7 +345,7 @@ shared(installMsg) actor class ICOracle() = this {
                     };
                     if (confirmed >= info.conMinRequired){
                         _confirmData(_sid, _pid);
-                        _setDataItem(_sid, _pid, newSum / confirmed);
+                        _setDataItem(_sid, _pid, {timestamp = _now(); value = newSum / confirmed });
                         for (request in log.requestLogs.vals()){
                             if (request.request.value >= avg and Nat.sub(request.request.value, avg) * 10000 / avg <= info.conMaxDevRate ){ 
                                 _setWorkload(request.provider, ?1, null);
@@ -412,37 +433,9 @@ shared(installMsg) actor class ICOracle() = this {
     };
     // https outcalls
     public query func _xe_transform(raw : IC.CanisterHttpResponsePayload) : async IC.CanisterHttpResponsePayload {
-        var txt : Text = "";
-        switch (Text.decodeUtf8(Blob.fromArray(raw.body))) {
-            case null {};
-            case (?decoded) {
-                var i: Nat = 0;
-                for (entry in Text.split(decoded, #text("<p class=\"result__BigRate-sc-1bsijpp-1 iGrAod\">"))) {
-                    if (i == 1){
-                        var j: Nat = 0;
-                        for (element1 in Text.split(entry, #text("<span class=\"faded-digits\">"))) {
-                            if (j == 0) {
-                                txt := element1;
-                            };
-                            if (j == 1) {
-                                var k: Nat = 0;
-                                for (element2 in Text.split(element1, #text("</span> US Dollars</p>"))) {
-                                    if (k == 0) {
-                                        txt #= element2;
-                                    };
-                                    k += 1;
-                                };
-                            };
-                            j += 1;
-                        };
-                    };
-                    i += 1;
-                };
-            };
-        };
         let transformed : IC.CanisterHttpResponsePayload = {
             status = raw.status;
-            body = Blob.toArray(Text.encodeUtf8(txt));
+            body = raw.body;
             headers = [
                 { name = "Content-Security-Policy"; value = "default-src 'self'"; },
                 { name = "Referrer-Policy"; value = "strict-origin" },
@@ -459,7 +452,10 @@ shared(installMsg) actor class ICOracle() = this {
         let chars = txt.chars();
         var num : Nat = 0;
         for (v in chars) {
-            if (Char.toNat32(v) != 32 and Char.toNat32(v) != 44){ // (space) ,
+            if (Char.toNat32(v) == 10 or Char.toNat32(v) == 13 or Char.toNat32(v) == 32 or Char.toNat32(v) == 44 or Char.toNat32(v) == 95){ 
+                // \n \r (space) , _
+                //skip
+            }else {
                 let charToNum = Nat32.toNat(Char.toNat32(v) - 48);
                 assert (charToNum >= 0 and charToNum <= 9);
                 num := num * 10 + charToNum;
@@ -467,48 +463,159 @@ shared(installMsg) actor class ICOracle() = this {
         };
         return num;
     };
-    private func _textFloatToNat(txt : Text, decimals: Nat) : Nat {
-        assert (txt.size() > 0);
+    private func _textToFloat(txt : Text) : Float {
+        //assert (txt.size() > 0);
         let chars = txt.chars();
         var num : Nat = 0;
-        var decimalsCount: Nat = 0;
-        var turnOnCounter : Bool = false;
+        var res : Float = 0.0;
+        var isDecimalPart : Bool = false;
+        var decimalsCount : Nat = 0;
         for (v in chars) {
-            if (Char.toNat32(v) == 32 or Char.toNat32(v) == 44){ // (space) ,
+            if (Char.toNat32(v) == 10 or Char.toNat32(v) == 13 or Char.toNat32(v) == 32 or Char.toNat32(v) == 44 or Char.toNat32(v) == 95){ 
+                // \n \r (space) , _
                 //skip
             }else if (Char.toNat32(v) == 46){ //.
-                turnOnCounter := true;
-            }else if (decimalsCount < decimals){
+                isDecimalPart := true;
+                res := _natToFloat(num);
+            }else if (Char.toNat32(v) >= 48 and Char.toNat32(v) <= 57 ) {
                 let charToNum = Nat32.toNat(Char.toNat32(v) - 48);
                 assert (charToNum >= 0 and charToNum <= 9);
-                num := num * 10 + charToNum;
-                if (turnOnCounter) { decimalsCount += 1; };
+                if (not(isDecimalPart)){
+                    num := num * 10 + charToNum;
+                }else{
+                    decimalsCount += 1;
+                    res += _natToFloat(charToNum) / _natToFloat(10 ** decimalsCount)
+                };
             };
         };
-        while (decimalsCount < decimals){
-            decimalsCount += 1;
-            num := num * 10;
-        };
-        return num;
+        if (not(isDecimalPart)) { res := _natToFloat(num) };
+        return res;
     };
-    private func _decodeXdrUsd(_result : IC.CanisterHttpResponsePayload) : Nat {
+    private func _floatToNat(_data : Float, _decimals: Nat) : Nat {
+        return Int.abs(Float.toInt(_data * _natToFloat(10 ** _decimals)));
+    };
+    private func _decodeTS(_result : IC.CanisterHttpResponsePayload) : (Text, Nat) {
+        var txt : Text = "";
         switch (Text.decodeUtf8(Blob.fromArray(_result.body))) {
-            case (null) { assert(false); return 0;};
+            case null { assert(false); return ("", 0); };
             case (?decoded) {
-                return _textFloatToNat(decoded, 4);
+                var i: Nat = 0;
+                for (entry in Text.split(decoded, #text("\"timestamp\": "))) {
+                    if (i == 1){
+                        var j: Nat = 0;
+                        for (element1 in Text.split(entry, #text("\""))) {
+                            if (j == 0) {
+                                txt := element1;
+                            };
+                            j += 1;
+                        };
+                        if (j == 1){
+                            j := 0;
+                            for (element1 in Text.split(entry, #text("}"))) {
+                                if (j == 0) {
+                                    txt := element1;
+                                };
+                                j += 1;
+                            };
+                        };
+                    };
+                    i += 1;
+                };
+                return (txt, _textToNat(txt));
             };
         };
     };
-    private func _fetchXdrUsd() : async (){
+    private func _decodeFX(_result : IC.CanisterHttpResponsePayload, _curr: Text, _decimals: Nat) : (Text, Nat) {
+        var txt : Text = "";
+        switch (Text.decodeUtf8(Blob.fromArray(_result.body))) {
+            case null { assert(false); return ("", 0); };
+            case (?decoded) {
+                var i: Nat = 0;
+                for (entry in Text.split(decoded, #text("\""# _curr #"\": "))) {
+                    if (i == 1){
+                        var j: Nat = 0;
+                        for (element1 in Text.split(entry, #text(","))) {
+                            if (j == 0) {
+                                txt := element1;
+                            };
+                            j += 1;
+                        };
+                        if (j == 1){
+                            j := 0;
+                            for (element1 in Text.split(entry, #text(" }"))) {
+                                if (j == 0) {
+                                    txt := element1;
+                                };
+                                j += 1;
+                            };
+                        };
+                    };
+                    i += 1;
+                };
+                return (txt, _floatToNat(1 / _textToFloat(txt), _decimals));
+            };
+        };
+    };
+    // private func _fetchFX() : async Nat{ // (Nat, Blob, Text,Nat)
+    //     // var n1: Nat = 0;
+    //     // var n2: Nat = 0;
+    //     let host : Text = setting_apilayer.host;
+    //     let request_headers = [
+    //         { name = "Host"; value = host # ":443" },
+    //         { name = "User-Agent"; value = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.0.0 Safari/537.36" }, // Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.0.0 Safari/537.36
+    //         { name = "apikey"; value = setting_apilayer.key },
+    //         //{ name = "User-Agent"; value = "PostmanRuntime/7.29.2" }
+    //     ];
+    //     let request : IC.CanisterHttpRequestArgs = { // "https://api.apilayer.com/fixer/latest?base=USD&symbols=XDR,EUR,GBP,JPY,AUD,CHF,NZD,CAD,HKD,CNY,KRW"
+    //         url = setting_apilayer.url; //"https://api.apilayer.com/exchangerates_data/latest?base=USD&symbols=XDR,EUR,GBP,JPY,AUD,CHF,NZD,CAD,HKD,SGD,CNY,KRW,TRY,INR,RUB,MXN,ZAR,SEK,DKK";
+    //         max_response_bytes = ?Nat64.fromNat(MAX_RESPONSE_BYTES);
+    //         headers = request_headers;
+    //         body = null;
+    //         method = #get;
+    //         transform = ?(#function(_xe_transform));
+    //     };
+    //     try {
+    //         Cycles.add(220_000_000_000);
+    //         let ic : IC.Self = actor ("aaaaa-aa");
+    //         let response = await ic.http_request(request);
+    //         // n1 := response.body.size();
+    //         // n2 := response.status;
+    //         let provider = Principal.fromActor(this);
+    //         let ts = _decodeTS(response);
+    //         let timestamp = ts.1;
+    //         for((sid, (info,time)) in Trie.iter(seriesInfo)){
+    //             if (sid == 0 or (sid >= 1000 and sid <= 1999)){
+    //                 let result = _decodeFX(response, info.base, info.decimals);
+    //                 if (result.1 > 0){
+    //                     var req : RequestLog = {
+    //                         request = { value = result.1; timestamp = timestamp; };
+    //                         provider = provider;
+    //                         time = _now();
+    //                         signature = null;
+    //                     };
+    //                     ignore _setData(provider, sid, req);
+    //                 };
+    //             };
+    //         };
+    //         // return (response.status, Blob.fromArray(response.body), result.0, result.1);
+    //         return response.status;
+    //     } catch (err) {
+    //         Debug.print(Error.message(err));
+    //         return 0;
+    //     };
+    // };
+    private func _fetchFX() : async (Nat, Blob, Text,Nat){ // (Nat, Blob, Text,Nat)
         // var n1: Nat = 0;
         // var n2: Nat = 0;
-        let host : Text = "www.xe.com";
+        let host : Text = setting_apilayer.host;
         let request_headers = [
             { name = "Host"; value = host # ":443" },
-            { name = "User-Agent"; value = "icoracle_canister" },
+            { name = "User-Agent"; value = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.0.0 Safari/537.36" }, // Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.0.0 Safari/537.36
+            { name = "apikey"; value = setting_apilayer.key },
+            //{ name = "User-Agent"; value = "PostmanRuntime/7.29.2" }
         ];
-        let request : IC.CanisterHttpRequestArgs = {
-            url = "https://www.xe.com/currencyconverter/convert/?Amount=1&From=XDR&To=USD";
+        let request : IC.CanisterHttpRequestArgs = { // "https://api.apilayer.com/fixer/latest?base=USD&symbols=XDR,EUR,GBP,JPY,AUD,CHF,NZD,CAD,HKD,CNY,KRW"
+            url = setting_apilayer.url; //"https://api.apilayer.com/exchangerates_data/latest?base=USD&symbols=XDR,EUR,GBP,JPY,AUD,CHF,NZD,CAD,HKD,SGD,CNY,KRW,TRY,INR,RUB,MXN,ZAR,SEK,DKK,THB,VND,MYR,TWD,BRL";
             max_response_bytes = ?Nat64.fromNat(MAX_RESPONSE_BYTES);
             headers = request_headers;
             body = null;
@@ -516,23 +623,33 @@ shared(installMsg) actor class ICOracle() = this {
             transform = ?(#function(_xe_transform));
         };
         //try {
-            Cycles.add(3_000_000_000);
+            Cycles.add(220_000_000_000);
             let ic : IC.Self = actor ("aaaaa-aa");
             let response = await ic.http_request(request);
             // n1 := response.body.size();
             // n2 := response.status;
-            let result = _decodeXdrUsd(response);
-            let sid: Nat = 0; // XDR-USD
             let provider = Principal.fromActor(this);
-            var req : RequestLog = {
-                request = { value = result; timestamp = Int.abs(Time.now() / 1000000000); };
-                provider = provider;
-                time = _now();
-                signature = null;
+            let ts = _decodeTS(response);
+            let timestamp = ts.1;
+            for((sid, (info,time)) in Trie.iter(seriesInfo)){
+                if (sid == 0 or (sid >= 1000 and sid <= 1999)){
+                    let result = _decodeFX(response, info.base, info.decimals);
+                    if (result.1 > 0){
+                        var req : RequestLog = {
+                            request = { value = result.1; timestamp = timestamp; };
+                            provider = provider;
+                            time = _now();
+                            signature = null;
+                        };
+                        ignore _setData(provider, sid, req);
+                    };
+                    // return (response.status, Blob.fromArray(response.body), result.0, result.1);
+                };
             };
-            ignore _setData(provider, sid, req);
+            return (response.status, Blob.fromArray(response.body), ts.0, ts.1);
         // } catch (err) {
         //     Debug.print(Error.message(err));
+        //     return (0, Blob.fromArray([]), "Error", 0);
         // };
     };
 
@@ -565,13 +682,15 @@ shared(installMsg) actor class ICOracle() = this {
             case(_){ return null; };
         };
     };
-    public query(msg) func anon_latest() : async [{name: Text; sid: SeriesId; decimals: Nat; data:(Timestamp, Nat)}]{
+    public query(msg) func anon_latest(_cat: T.Category) : async [{name: Text; sid: SeriesId; decimals: Nat; data:(Timestamp, Nat)}]{
         assert(_onlyAnon(msg.caller));
         var res: [{name: Text; sid: SeriesId; decimals: Nat; data:(Timestamp, Nat)}] = [];
         for ((sid, info) in Trie.iter(seriesInfo)){
-            switch(_getDataItem(sid, _now())){
-                case(?(v)){ res := Tools.arrayAppend(res, [{name=info.0.name; sid=sid; decimals=info.0.decimals; data=v}]) };
-                case(_){};
+            if (_categoryCheck(_cat, sid)){
+                switch(_getDataItem(sid, _now())){
+                    case(?(v)){ res := Tools.arrayAppend(res, [{name=info.0.name; sid=sid; decimals=info.0.decimals; data=v}]) };
+                    case(_){};
+                };
             };
         };
         return res;
@@ -597,15 +716,17 @@ shared(installMsg) actor class ICOracle() = this {
             case(_){ return null; };
         };
     };
-    public shared(msg) func latest() : async [DataResponse]{
+    public shared(msg) func latest(_cat: T.Category) : async [DataResponse]{
         var res: [{name: Text; sid: SeriesId; decimals: Nat; data:(Timestamp, Nat)}] = [];
         for ((sid, info) in Trie.iter(seriesInfo)){
-            switch(_getDataItem(sid, _now())){
-                case(?(v)){ 
-                    _chargeFee(msg.caller, 2);
-                    res := Tools.arrayAppend(res, [{name=info.0.name; sid=sid; decimals=info.0.decimals; data=v}]) 
+            if (_categoryCheck(_cat, sid)){
+                switch(_getDataItem(sid, _now())){
+                    case(?(v)){ 
+                        _chargeFee(msg.caller, 2);
+                        res := Tools.arrayAppend(res, [{name=info.0.name; sid=sid; decimals=info.0.decimals; data=v}]) 
+                    };
+                    case(_){};
                 };
-                case(_){};
             };
         };
         return res;
@@ -649,7 +770,7 @@ shared(installMsg) actor class ICOracle() = this {
         let pid = ts / info.heartbeat;
         return _getLog(_sid, pid);
     };
-    // request '(0, record{value=12760; timestamp=1665414220;}, null)'
+    // request '(0, record{value=12751; timestamp=1665583587;}, null)'
     public shared(msg) func request(_sid: SeriesId, _data: DataItem, signature: ?Blob) : async (confirmed: Bool){
         assert(_onlyProvider(msg.caller, _sid));
         let provider = _getProvider(msg.caller);
@@ -666,9 +787,9 @@ shared(installMsg) actor class ICOracle() = this {
     };
 
     // Debug
-    public shared(msg) func debug_fetchXdrUsd() : async (){
+    public shared(msg) func debug_fetchFX() : async (Nat, Blob, Text, Nat){ // (Nat, Blob, Text, Nat)
         assert(_onlyOwner(msg.caller));
-        await _fetchXdrUsd();
+        return await _fetchFX();
     };
     public shared(msg) func debug_requestIcpXdr() : async (){
         assert(_onlyOwner(msg.caller));
@@ -680,7 +801,16 @@ shared(installMsg) actor class ICOracle() = this {
 
     // Manage 
     public shared(msg) func setFee(_fee: Nat) : async (){
+        assert(_onlyOwner(msg.caller));
         fee := _fee;
+    };
+    public shared(msg) func setApi(_type: Text, _value: T.OutCallAPI) : async Bool{
+        assert(_onlyOwner(msg.caller));
+        if (_type == "apilayer"){
+            setting_apilayer := _value;
+            return true;
+        };
+        return false;
     };
     public shared(msg) func setProvider(_account: Provider, _sids: [SeriesId], _agents: [Principal]) : async (){
         assert(_onlyOwner(msg.caller));
@@ -734,20 +864,26 @@ shared(installMsg) actor class ICOracle() = this {
         assert(_onlyOwner(msg.caller));
         dexs := Trie.put(dexs, keyt(_dex), Text.equal, _router).0;
     };
-    public shared(msg) func setSeriesInfo(_info: SeriesInfo): async SeriesId{
-        let sid = index;
-        index += 1;
-        seriesInfo := Trie.put(seriesInfo, keyn(sid), Nat.equal, (_info, _now())).0;
-        return sid;
+    public shared(msg) func newSeriesInfo(_sid: SeriesId, _info: SeriesInfo): async Bool{
+        assert(_onlyOwner(msg.caller));
+        assert(Option.isNull(Trie.get(seriesInfo, keyn(_sid), Nat.equal)));
+        seriesInfo := Trie.put(seriesInfo, keyn(_sid), Nat.equal, (_info, _now())).0;
+        if (_sid > index) { index := _sid };
+        return true;
     };
     public shared(msg) func updateSeriesInfo(_sid: SeriesId, _info: SeriesInfo): async Bool{
+        assert(_onlyOwner(msg.caller));
+        assert(Option.isSome(Trie.get(seriesInfo, keyn(_sid), Nat.equal)));
         seriesInfo := Trie.put(seriesInfo, keyn(_sid), Nat.equal, (_info, _getSeriesCreationTime(_sid))).0;
+        //if (_sid > index) { index := _sid };
         return true;
     };
 
     // // 0: xdr/usd  permyriad
     // seriesInfo := Trie.put(seriesInfo, keyn(0), Nat.equal, ({
     //     name = "imf:1h:xdr/usd";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "XDR";
+    //     quote = "USD";
     //     decimals = 4; 
     //     heartbeat = 3600; // seconds
     //     conMaxDevRate = 5; // ‱ permyriad
@@ -758,6 +894,8 @@ shared(installMsg) actor class ICOracle() = this {
     // // 1: icp/xdr  permyriad
     // seriesInfo := Trie.put(seriesInfo, keyn(1), Nat.equal, ({
     //     name = "gov:10min:icp/xdr";
+    //     base = "ICP";
+    //     quote = "XDR";
     //     decimals = 4; 
     //     heartbeat = 600; // seconds
     //     conMaxDevRate = 10; // ‱ permyriad
@@ -768,11 +906,301 @@ shared(installMsg) actor class ICOracle() = this {
     // // 2: icp/usd  permyriad
     // seriesInfo := Trie.put(seriesInfo, keyn(2), Nat.equal, ({
     //     name = "gov:10min:icp/usd";
+    //     base = "ICP";
+    //     quote = "USD";
     //     decimals = 4; 
     //     heartbeat = 600; // seconds
     //     conMaxDevRate = 10; // ‱ permyriad
     //     conMinRequired = 1; // from nns data
     //     conDuration = 24 * 3600;
+    //     cacheDuration = 2 * 366 * 24 * 3600;
+    // }, _now())).0;
+    // // 1000: XDR/USD  permyriad
+    // seriesInfo := Trie.put(seriesInfo, keyn(1000), Nat.equal, ({
+    //     name = "fx:1h:XDR/USD";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "XDR";
+    //     quote = "USD";
+    //     decimals = 6; 
+    //     heartbeat = 3600; // seconds
+    //     conMaxDevRate = 5; // ‱ permyriad
+    //     conMinRequired = 1;
+    //     conDuration = 7 * 24 * 3600;
+    //     cacheDuration = 2 * 366 * 24 * 3600;
+    // }, _now())).0;
+    // // 1001: EUR/USD  permyriad
+    // seriesInfo := Trie.put(seriesInfo, keyn(1001), Nat.equal, ({
+    //     name = "fx:1h:EUR/USD";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "EUR";
+    //     quote = "USD";
+    //     decimals = 6; 
+    //     heartbeat = 3600; // seconds
+    //     conMaxDevRate = 5; // ‱ permyriad
+    //     conMinRequired = 1;
+    //     conDuration = 7 * 24 * 3600;
+    //     cacheDuration = 2 * 366 * 24 * 3600;
+    // }, _now())).0;
+    // // 1002: GBP/USD  permyriad
+    // seriesInfo := Trie.put(seriesInfo, keyn(1002), Nat.equal, ({
+    //     name = "fx:1h:GBP/USD";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "GBP";
+    //     quote = "USD";
+    //     decimals = 6; 
+    //     heartbeat = 3600; // seconds
+    //     conMaxDevRate = 5; // ‱ permyriad
+    //     conMinRequired = 1;
+    //     conDuration = 7 * 24 * 3600;
+    //     cacheDuration = 2 * 366 * 24 * 3600;
+    // }, _now())).0;
+    // // 1003: JPY/USD  permyriad
+    // seriesInfo := Trie.put(seriesInfo, keyn(1003), Nat.equal, ({
+    //     name = "fx:1h:JPY/USD";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "JPY";
+    //     quote = "USD";
+    //     decimals = 6; 
+    //     heartbeat = 3600; // seconds
+    //     conMaxDevRate = 5; // ‱ permyriad
+    //     conMinRequired = 1;
+    //     conDuration = 7 * 24 * 3600;
+    //     cacheDuration = 2 * 366 * 24 * 3600;
+    // }, _now())).0;
+    // // 1004: AUD/USD  permyriad
+    // seriesInfo := Trie.put(seriesInfo, keyn(1004), Nat.equal, ({
+    //     name = "fx:1h:AUD/USD";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "AUD";
+    //     quote = "USD";
+    //     decimals = 6; 
+    //     heartbeat = 3600; // seconds
+    //     conMaxDevRate = 5; // ‱ permyriad
+    //     conMinRequired = 1;
+    //     conDuration = 7 * 24 * 3600;
+    //     cacheDuration = 2 * 366 * 24 * 3600;
+    // }, _now())).0;
+    // // 1005: CHF/USD  permyriad
+    // seriesInfo := Trie.put(seriesInfo, keyn(1005), Nat.equal, ({
+    //     name = "fx:1h:CHF/USD";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "CHF";
+    //     quote = "USD";
+    //     decimals = 6; 
+    //     heartbeat = 3600; // seconds
+    //     conMaxDevRate = 5; // ‱ permyriad
+    //     conMinRequired = 1;
+    //     conDuration = 7 * 24 * 3600;
+    //     cacheDuration = 2 * 366 * 24 * 3600;
+    // }, _now())).0;
+    // // 1006: NZD/USD  permyriad
+    // seriesInfo := Trie.put(seriesInfo, keyn(1006), Nat.equal, ({
+    //     name = "fx:1h:NZD/USD";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "NZD";
+    //     quote = "USD";
+    //     decimals = 6; 
+    //     heartbeat = 3600; // seconds
+    //     conMaxDevRate = 5; // ‱ permyriad
+    //     conMinRequired = 1;
+    //     conDuration = 7 * 24 * 3600;
+    //     cacheDuration = 2 * 366 * 24 * 3600;
+    // }, _now())).0;
+    // // 1007: CAD/USD  permyriad
+    // seriesInfo := Trie.put(seriesInfo, keyn(1007), Nat.equal, ({
+    //     name = "fx:1h:CAD/USD";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "CAD";
+    //     quote = "USD";
+    //     decimals = 6; 
+    //     heartbeat = 3600; // seconds
+    //     conMaxDevRate = 5; // ‱ permyriad
+    //     conMinRequired = 1;
+    //     conDuration = 7 * 24 * 3600;
+    //     cacheDuration = 2 * 366 * 24 * 3600;
+    // }, _now())).0;
+    // // 1008: HKD/USD  permyriad
+    // seriesInfo := Trie.put(seriesInfo, keyn(1008), Nat.equal, ({
+    //     name = "fx:1h:HKD/USD";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "HKD";
+    //     quote = "USD";
+    //     decimals = 6; 
+    //     heartbeat = 3600; // seconds
+    //     conMaxDevRate = 5; // ‱ permyriad
+    //     conMinRequired = 1;
+    //     conDuration = 7 * 24 * 3600;
+    //     cacheDuration = 2 * 366 * 24 * 3600;
+    // }, _now())).0;
+    // // 1009: SGD/USD  permyriad
+    // seriesInfo := Trie.put(seriesInfo, keyn(1009), Nat.equal, ({
+    //     name = "fx:1h:SGD/USD";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "SGD";
+    //     quote = "USD";
+    //     decimals = 6; 
+    //     heartbeat = 3600; // seconds
+    //     conMaxDevRate = 5; // ‱ permyriad
+    //     conMinRequired = 1;
+    //     conDuration = 7 * 24 * 3600;
+    //     cacheDuration = 2 * 366 * 24 * 3600;
+    // }, _now())).0;
+    // // 1010: CNY/USD  permyriad
+    // seriesInfo := Trie.put(seriesInfo, keyn(1010), Nat.equal, ({
+    //     name = "fx:1h:CNY/USD";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "CNY";
+    //     quote = "USD";
+    //     decimals = 6; 
+    //     heartbeat = 3600; // seconds
+    //     conMaxDevRate = 5; // ‱ permyriad
+    //     conMinRequired = 1;
+    //     conDuration = 7 * 24 * 3600;
+    //     cacheDuration = 2 * 366 * 24 * 3600;
+    // }, _now())).0;
+    // // 1011: KRW/USD  permyriad
+    // seriesInfo := Trie.put(seriesInfo, keyn(1011), Nat.equal, ({
+    //     name = "fx:1h:KRW/USD";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "KRW";
+    //     quote = "USD";
+    //     decimals = 6; 
+    //     heartbeat = 3600; // seconds
+    //     conMaxDevRate = 5; // ‱ permyriad
+    //     conMinRequired = 1;
+    //     conDuration = 7 * 24 * 3600;
+    //     cacheDuration = 2 * 366 * 24 * 3600;
+    // }, _now())).0;
+    // // 1012: TRY/USD  permyriad
+    // seriesInfo := Trie.put(seriesInfo, keyn(1012), Nat.equal, ({
+    //     name = "fx:1h:TRY/USD";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "TRY";
+    //     quote = "USD";
+    //     decimals = 6; 
+    //     heartbeat = 3600; // seconds
+    //     conMaxDevRate = 5; // ‱ permyriad
+    //     conMinRequired = 1;
+    //     conDuration = 7 * 24 * 3600;
+    //     cacheDuration = 2 * 366 * 24 * 3600;
+    // }, _now())).0;
+    // // 1013: INR/USD  permyriad
+    // seriesInfo := Trie.put(seriesInfo, keyn(1013), Nat.equal, ({
+    //     name = "fx:1h:INR/USD";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "INR";
+    //     quote = "USD";
+    //     decimals = 6; 
+    //     heartbeat = 3600; // seconds
+    //     conMaxDevRate = 5; // ‱ permyriad
+    //     conMinRequired = 1;
+    //     conDuration = 7 * 24 * 3600;
+    //     cacheDuration = 2 * 366 * 24 * 3600;
+    // }, _now())).0;
+    // // 1014: RUB/USD  permyriad
+    // seriesInfo := Trie.put(seriesInfo, keyn(1014), Nat.equal, ({
+    //     name = "fx:1h:RUB/USD";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "RUB";
+    //     quote = "USD";
+    //     decimals = 6; 
+    //     heartbeat = 3600; // seconds
+    //     conMaxDevRate = 5; // ‱ permyriad
+    //     conMinRequired = 1;
+    //     conDuration = 7 * 24 * 3600;
+    //     cacheDuration = 2 * 366 * 24 * 3600;
+    // }, _now())).0;
+    // // 1015: MXN/USD  permyriad
+    // seriesInfo := Trie.put(seriesInfo, keyn(1015), Nat.equal, ({
+    //     name = "fx:1h:MXN/USD";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "MXN";
+    //     quote = "USD";
+    //     decimals = 6; 
+    //     heartbeat = 3600; // seconds
+    //     conMaxDevRate = 5; // ‱ permyriad
+    //     conMinRequired = 1;
+    //     conDuration = 7 * 24 * 3600;
+    //     cacheDuration = 2 * 366 * 24 * 3600;
+    // }, _now())).0;
+    // // 1016: ZAR/USD  permyriad
+    // seriesInfo := Trie.put(seriesInfo, keyn(1016), Nat.equal, ({
+    //     name = "fx:1h:ZAR/USD";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "ZAR";
+    //     quote = "USD";
+    //     decimals = 6; 
+    //     heartbeat = 3600; // seconds
+    //     conMaxDevRate = 5; // ‱ permyriad
+    //     conMinRequired = 1;
+    //     conDuration = 7 * 24 * 3600;
+    //     cacheDuration = 2 * 366 * 24 * 3600;
+    // }, _now())).0;
+    // // 1017: SEK/USD  permyriad
+    // seriesInfo := Trie.put(seriesInfo, keyn(1017), Nat.equal, ({
+    //     name = "fx:1h:SEK/USD";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "SEK";
+    //     quote = "USD";
+    //     decimals = 6; 
+    //     heartbeat = 3600; // seconds
+    //     conMaxDevRate = 5; // ‱ permyriad
+    //     conMinRequired = 1;
+    //     conDuration = 7 * 24 * 3600;
+    //     cacheDuration = 2 * 366 * 24 * 3600;
+    // }, _now())).0;
+    // // 1018: DKK/USD  permyriad
+    // seriesInfo := Trie.put(seriesInfo, keyn(1018), Nat.equal, ({
+    //     name = "fx:1h:DKK/USD";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "DKK";
+    //     quote = "USD";
+    //     decimals = 6; 
+    //     heartbeat = 3600; // seconds
+    //     conMaxDevRate = 5; // ‱ permyriad
+    //     conMinRequired = 1;
+    //     conDuration = 7 * 24 * 3600;
+    //     cacheDuration = 2 * 366 * 24 * 3600;
+    // }, _now())).0;
+    // // 1019: THB/USD  permyriad
+    // seriesInfo := Trie.put(seriesInfo, keyn(1019), Nat.equal, ({
+    //     name = "fx:1h:THB/USD";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "THB";
+    //     quote = "USD";
+    //     decimals = 6; 
+    //     heartbeat = 3600; // seconds
+    //     conMaxDevRate = 5; // ‱ permyriad
+    //     conMinRequired = 1;
+    //     conDuration = 7 * 24 * 3600;
+    //     cacheDuration = 2 * 366 * 24 * 3600;
+    // }, _now())).0;
+    // // 1020: VND/USD  permyriad
+    // seriesInfo := Trie.put(seriesInfo, keyn(1020), Nat.equal, ({
+    //     name = "fx:1h:VND/USD";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "VND";
+    //     quote = "USD";
+    //     decimals = 6; 
+    //     heartbeat = 3600; // seconds
+    //     conMaxDevRate = 5; // ‱ permyriad
+    //     conMinRequired = 1;
+    //     conDuration = 7 * 24 * 3600;
+    //     cacheDuration = 2 * 366 * 24 * 3600;
+    // }, _now())).0;
+    // // 1021: MYR/USD  permyriad
+    // seriesInfo := Trie.put(seriesInfo, keyn(1021), Nat.equal, ({
+    //     name = "fx:1h:MYR/USD";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "MYR";
+    //     quote = "USD";
+    //     decimals = 6; 
+    //     heartbeat = 3600; // seconds
+    //     conMaxDevRate = 5; // ‱ permyriad
+    //     conMinRequired = 1;
+    //     conDuration = 7 * 24 * 3600;
+    //     cacheDuration = 2 * 366 * 24 * 3600;
+    // }, _now())).0;
+    // // 1022: TWD/USD  permyriad
+    // seriesInfo := Trie.put(seriesInfo, keyn(1022), Nat.equal, ({
+    //     name = "fx:1h:TWD/USD";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "TWD";
+    //     quote = "USD";
+    //     decimals = 6; 
+    //     heartbeat = 3600; // seconds
+    //     conMaxDevRate = 5; // ‱ permyriad
+    //     conMinRequired = 1;
+    //     conDuration = 7 * 24 * 3600;
+    //     cacheDuration = 2 * 366 * 24 * 3600;
+    // }, _now())).0;
+    // // 1023: BRL/USD  permyriad
+    // seriesInfo := Trie.put(seriesInfo, keyn(1023), Nat.equal, ({
+    //     name = "fx:1h:BRL/USD";  // gov: dex: mkt: imf:   tick: 1min: 5min: 10min: 1h: 1d:
+    //     base = "BRL";
+    //     quote = "USD";
+    //     decimals = 6; 
+    //     heartbeat = 3600; // seconds
+    //     conMaxDevRate = 5; // ‱ permyriad
+    //     conMinRequired = 1;
+    //     conDuration = 7 * 24 * 3600;
     //     cacheDuration = 2 * 366 * 24 * 3600;
     // }, _now())).0;
 
@@ -801,15 +1229,125 @@ shared(installMsg) actor class ICOracle() = this {
     //     let f = _requestIcpXdr();
     // };
 
-    private stable var LastUpdatedIcpXdr: Time.Time = 0;
+    // http request
+    public query func http_request(req : ICHTTP.HttpRequest) : async ICHTTP.HttpResponse {
+        switch (req.method, not Option.isNull(Array.find(req.headers, ICHTTP.isGzip)), req.url) {
+        case ("GET", _, path) {
+            var i: Nat = 0;
+            var baseToken : Text = "";
+            var quoteToken : Text = "";
+            for (entry in Text.split(path, #text("/"))) {
+                if (entry.size() > 0){
+                    if (i == 0){
+                        baseToken := entry;
+                    };
+                    if (i == 1){
+                        quoteToken := entry;
+                    };
+                    i += 1;
+                };
+            };
+            let ts = _now();
+            var response: Text = "";
+            var sid : Nat = 0;
+            var error: Bool = false;
+            if (baseToken.size() > 0 and quoteToken.size() > 0){
+                let s = Trie.filter(seriesInfo, func (k: Nat, v: (SeriesInfo, Timestamp)): Bool{
+                    v.0.base == baseToken and v.0.quote == quoteToken
+                });
+                if (Trie.size(s) == 0){
+                    error := true; 
+                    response := "{\"error\": {\"code\": 400, \"message\": \"Data not available\"}}";
+                }else{
+                    for ((k,v) in Trie.iter(s)){
+                        sid := k;
+                    };
+                };
+            }else {
+                try{
+                    sid := _textToNat(Text.replace(path, #text("/"), ""));
+                }catch(e){
+                    error := true; 
+                    response := "{\"error\": {\"code\": 400, \"message\": \"Data not available\"}}";
+                };
+            };
+            var status: Nat16 = 200;
+            if (not(error)){
+                try{
+                    var info: SeriesInfo = _getSeriesInfo(sid);
+                    switch(_getDataItem(sid, ts)){
+                        case(?(timestamp, value)){ response := "{\"success\": {\"base\": \""# info.base #"\", \"quote\": \""# info.quote #"\", \"rate\": "# Float.toText(_natToFloat(value) / _natToFloat(10 ** info.decimals)) #", \"timestamp\": "# Nat.toText(timestamp) #" }}"; };
+                        case(_){ response := "{\"error\": {\"code\": 400, \"message\": \"Data not available\"}}"; };
+                    };
+                }catch(e){
+                    status := 400;
+                    response := "{\"error\": {\"code\": 400, \"message\": \"Data not available\"}}";
+                };
+            }else{
+                status := 400;
+            };
+            return {
+                status_code = status;
+                headers = [ ("content-type", "text/plain") ];
+                body = Text.encodeUtf8(response);
+                streaming_strategy = null;
+                upgrade = null;
+            };
+        };
+        case ("POST", _, _) {{
+            status_code = 204;
+            headers = [];
+            body = "";
+            streaming_strategy = null;
+            upgrade = ?true;
+        }};
+        case _ {{
+            status_code = 400;
+            headers = [];
+            body = "Invalid request";
+            streaming_strategy = null;
+            upgrade = null;
+        }};
+        }
+    };
+
+    // heartbeat
+    private stable var LastUpdated_IcpXdr: Nat = 0;
     private func _heartbeat_fetchIcpXdr() : async (){
-        if (Time.now() >= LastUpdatedIcpXdr + 3600000000000){ // 3600s
-            LastUpdatedIcpXdr := Time.now();
+        let hbid = Int.abs(Time.now()) / 600000000000; // 600s
+        if (hbid > LastUpdated_IcpXdr and Int.abs(Time.now()) >= hbid * 600000000000 + 60000000000 ){ // 60s
+            LastUpdated_IcpXdr := hbid;
             await _requestIcpXdr();
         };
     };
+    public shared(msg) func test_heartbeat_fetchIcpXdr() : async (Nat){
+        assert(_onlyOwner(msg.caller));
+        await _heartbeat_fetchIcpXdr();
+        return LastUpdated_IcpXdr;
+    };
+    private stable var LastUpdated_FX: Nat = 0;
+    private stable var Retry_FX: Time.Time = 0;
+    private func _heartbeat_fetchFX() : async (){
+        let hbid = Int.abs(Time.now()) / 3600000000000; // 1h
+        if (hbid > LastUpdated_FX and Int.abs(Time.now()) >= hbid * 3600000000000 + 60000000000 ){ // 60s
+            LastUpdated_FX := hbid;
+            if ((await _fetchFX()).0 == 0){
+                Retry_FX := Time.now();
+            };
+        };
+        if (Retry_FX > 0 and Time.now() > Retry_FX + 10000000000){ // 10s
+            Retry_FX := 0;
+            ignore await _fetchFX();
+        };
+    };
+    public shared(msg) func test_heartbeat_fetchFX() : async (Nat){
+        assert(_onlyOwner(msg.caller));
+        await _heartbeat_fetchFX();
+        return LastUpdated_FX;
+    };
     system func heartbeat() : async () {
         await _heartbeat_fetchIcpXdr();
+        await _heartbeat_fetchFX();
     };
 
 };

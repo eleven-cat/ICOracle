@@ -9,6 +9,7 @@ type VolatilityResponse = record {
 };
 type Timestamp = nat;
 type SeriesInfo = record {
+   base: text;
    cacheDuration: nat;
    conDuration: nat;
    conMaxDevRate: nat;
@@ -16,6 +17,7 @@ type SeriesInfo = record {
    decimals: nat;
    heartbeat: nat;
    name: text;
+   quote: text;
 };
 type SeriesId = nat;
 type RequestLog = record {
@@ -48,13 +50,30 @@ type CanisterHttpResponsePayload = record {
    headers: vec HttpHeader;
    status: nat;
 };
+type OutCallAPI = record {
+   host: text;
+   key: text;
+   name: text;
+   url: text;
+};
+type Category = variant {
+   Commodity;
+   Crypto;
+   Currency;
+   Economy;
+   Other;
+   Social;
+   Sports;
+   Stock;
+   Weather;
+};
 type ICOracle = service {
    anon_get: (SeriesId, opt Timestamp) -> (opt record { data: record { Timestamp; nat; }; decimals: nat; }) query;
    anon_getSeries: (SeriesId, opt nat) -> (record { data: vec record { Timestamp; nat; }; decimals: nat; }) query;
-   anon_latest: () -> (vec record { data: record { Timestamp; nat; }; decimals: nat; name: text;sid: SeriesId;}) query;
+   anon_latest: (Category) -> (vec record { data: record { Timestamp; nat; }; decimals: nat; name: text;sid: SeriesId;}) query;
    get: (SeriesId, opt Timestamp) -> (opt record { data: record { Timestamp; nat;}; decimals: nat;});
    getSeries: (SeriesId, opt nat) -> (record { data: vec record { Timestamp; nat; }; decimals: nat;});
-   latest: () -> (vec DataResponse);
+   latest: (Category) -> (vec DataResponse);
    volatility: (SeriesId, nat) -> (VolatilityResponse);
    getFee: () -> (nat) query;
    getLog: (SeriesId, opt Timestamp) -> (opt Log) query;
