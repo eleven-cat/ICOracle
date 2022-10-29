@@ -2,19 +2,7 @@
 
 ## Changelist
 
-### v0.3 Alpha
-
-- Fix Bugs
-- Fetching data using https outcall
-- Refactoring SeriesInfo data type
-- Refactoring latest() and anon_latest() functions
-- Support for http_request query data
-- Support for 24 Currencies(XDR/USD,EUR/USD,GBP/USD,JPY/USD,AUD/USD,CHF/USD,NZD/USD,CAD/USD,HKD/USD,SGD/USD,CNY/USD,KRW/USD,TRY/USD,INR/USD,RUB/USD,MXN/USD,ZAR/USD,SEK/USD,DKK/USD,THB/USD,VND/USD,MYR/USD,TWD/USD,BRL/USD) rate data
-
-### v0.2 Alpha
-
-- Initial version
-- Support for ICP/USD Data Feeds
+[Changelist.md](Changelist.md)
 
 ## ICOracle Canister
 
@@ -35,6 +23,7 @@ type VolatilityResponse = record {
    percent: float64;
 };
 type Timestamp = nat;
+type SourceType = variant {Governance; Dex; Weighted; Conversion; AutoOracle; NodeOracle; HybridOracle;};
 type SeriesInfo = record {
    base: text;
    cacheDuration: nat;
@@ -45,6 +34,8 @@ type SeriesInfo = record {
    heartbeat: nat;
    name: text;
    quote: text;
+   sourceType: SourceType;
+   sourceName: text;
 };
 type SeriesId = nat;
 type RequestLog = record {
@@ -97,7 +88,7 @@ type Category = variant {
 type ICOracle = service {
    anon_get: (SeriesId, opt Timestamp) -> (opt record { data: record { Timestamp; nat; }; decimals: nat; }) query;
    anon_getSeries: (SeriesId, opt nat) -> (record { data: vec record { Timestamp; nat; }; decimals: nat; }) query;
-   anon_latest: (Category) -> (vec record { data: record { Timestamp; nat; }; decimals: nat; name: text;sid: SeriesId;}) query;
+   anon_latest: (Category) -> (vec DataResponse) query;
    get: (SeriesId, opt Timestamp) -> (opt record { data: record { Timestamp; nat;}; decimals: nat;});
    getSeries: (SeriesId, opt nat) -> (record { data: vec record { Timestamp; nat; }; decimals: nat;});
    latest: (Category) -> (vec DataResponse);
@@ -196,20 +187,26 @@ request: (SeriesId, DataItem, opt blob) -> (bool);
 
 ## HTTP Request
 
-### https://pncff-zqaaa-aaaai-qnp3a-cai.raw.ic0.app/{BaseToken}/{QuoteToken}
-Enter `{BaseToken}` and `{QuoteToken}` in upper case.  
+### [Get] https://pncff-zqaaa-aaaai-qnp3a-cai.raw.ic0.app/{BaseToken}/{QuoteToken}
+Specify `{BaseToken}` and `{QuoteToken}` in upper case.  
 e.g. https://pncff-zqaaa-aaaai-qnp3a-cai.raw.ic0.app/ICP/USD  
 returns:
 ```
-{"success": {"base": "ICP", "quote": "USD", "rate": 5.306500, "timestamp": 1666852332 }}
+{"success": [{"name": "gov:10min:icp/usd", "base": "ICP", "quote": "USD", "rate": 5.237900, "timestamp": 1667041267 }]}
 ```
 
-### https://pncff-zqaaa-aaaai-qnp3a-cai.raw.ic0.app/{sid}
-Enter `{sid}` with `sid` of series data.  
+### [Get] https://pncff-zqaaa-aaaai-qnp3a-cai.raw.ic0.app/{sid}
+Specify `{sid}` with `sid` of series data.  
 e.g. https://pncff-zqaaa-aaaai-qnp3a-cai.raw.ic0.app/2  
 returns:
 ```
-{"success": {"base": "ICP", "quote": "USD", "rate": 5.306500, "timestamp": 1666852332 }}
+{"success": [{"name": "gov:10min:icp/usd", "base": "ICP", "quote": "USD", "rate": 5.237900, "timestamp": 1667041267 }]}
+```
+
+### Error
+- 400: Data not available
+```
+{"error": {"code": 400, "message": "Data not available"}}
 ```
 
 
@@ -231,6 +228,10 @@ Token $OT is the utility token of ICOracle and the Dapp pays OT as a fee for an 
 - anon_get: free
 - anon_getSeries: free
 - anon_latest: free
+
+**HTTP Request:**
+
+- Get: free
 
 ## Data Feeds
 

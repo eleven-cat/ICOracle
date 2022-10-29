@@ -12,6 +12,7 @@ module {
     //     conDuration: Nat; // seconds
     //     cacheDuration: Nat; // seconds
     // };
+    public type SourceType = {#Governance; #Dex; #Weighted; #Conversion; #AutoOracle; #NodeOracle; #HybridOracle;}; // AutoOracle = Https outcall
     public type SeriesInfo = { // time series data info
         name: Text;
         base: Text; // e.g. ICP
@@ -22,6 +23,8 @@ module {
         conMinRequired: Nat; // Each aggregation requires at least 'conMinRequired' oracles calculate a trusted value.
         conDuration: Nat; // seconds
         cacheDuration: Nat; // seconds
+        sourceType: SourceType;
+        sourceName: Text;
     };
     public type DataItem = { value: Nat; timestamp: Timestamp;};
     public type DataResponse = {name: Text; sid: SeriesId; decimals: Nat; data:(Timestamp, Nat)};

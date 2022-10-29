@@ -2,11 +2,14 @@
 
 ## Crypto
 
-- **ICP/XDR** (sid: 1)  https://pncff-zqaaa-aaaai-qnp3a-cai.raw.ic0.app/ICP/XDR  
+- **ICP/XDR** (sid: 1)  https://pncff-zqaaa-aaaai-qnp3a-cai.raw.ic0.app/1  
     heartbeat: 10min, decimals: 4, data sources: Dfinity Foundation (on-chain)
-- **ICP/USD** (sid: 2)  https://pncff-zqaaa-aaaai-qnp3a-cai.raw.ic0.app/ICP/USD  
+- **ICP/USD** (sid: 2)  https://pncff-zqaaa-aaaai-qnp3a-cai.raw.ic0.app/2  
     heartbeat: 10min, decimals: 4, data sources: ICOracle (on-chain calculation)  
-    Notes: The ICP/USD conversion rate is calculated based on XDR/USD and ICP/XDR.
+    Notes: The ICP/USD conversion rate is calculated based on XDR/USD and ICP/XDR. 
+- **BTC/USD** (sid: 12)  https://pncff-zqaaa-aaaai-qnp3a-cai.raw.ic0.app/12  
+    heartbeat: 1h, decimals: 8, data sources: Coinbase (https outcall)  
+
 
 ## Currency
 

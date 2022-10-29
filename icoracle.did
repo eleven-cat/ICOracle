@@ -8,6 +8,7 @@ type VolatilityResponse = record {
    percent: float64;
 };
 type Timestamp = nat;
+type SourceType = variant {Governance; Dex; Weighted; Conversion; AutoOracle; NodeOracle; HybridOracle;};
 type SeriesInfo = record {
    base: text;
    cacheDuration: nat;
@@ -18,6 +19,8 @@ type SeriesInfo = record {
    heartbeat: nat;
    name: text;
    quote: text;
+   sourceType: SourceType;
+   sourceName: text;
 };
 type SeriesId = nat;
 type RequestLog = record {
@@ -70,7 +73,7 @@ type Category = variant {
 type ICOracle = service {
    anon_get: (SeriesId, opt Timestamp) -> (opt record { data: record { Timestamp; nat; }; decimals: nat; }) query;
    anon_getSeries: (SeriesId, opt nat) -> (record { data: vec record { Timestamp; nat; }; decimals: nat; }) query;
-   anon_latest: (Category) -> (vec record { data: record { Timestamp; nat; }; decimals: nat; name: text;sid: SeriesId;}) query;
+   anon_latest: (Category) -> (vec DataResponse) query;
    get: (SeriesId, opt Timestamp) -> (opt record { data: record { Timestamp; nat;}; decimals: nat;});
    getSeries: (SeriesId, opt nat) -> (record { data: vec record { Timestamp; nat; }; decimals: nat;});
    latest: (Category) -> (vec DataResponse);
