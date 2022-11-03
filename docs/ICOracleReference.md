@@ -140,19 +140,19 @@ anon_latest: (Category) -> (vec DataResponse) query;
 ### get
 Returns the latest data item of the series data `SeriesId` before the specified time `Timestamp` (default is current time). A fee will be charged for this call.
 ```
-get: (SeriesId, opt Timestamp) -> (opt DataResponse) query;
+get: (SeriesId, opt Timestamp) -> (opt DataResponse);
 ```
 
 ### getSeries
 Returns data items of the series data `SeriesId`. A fee will be charged for this call. It supports paging function with 500 data per page.
 ```
-getSeries: (SeriesId, page: opt nat) -> (SeriesDataResponse) query;
+getSeries: (SeriesId, page: opt nat) -> (SeriesDataResponse);
 ```
 
 ### latest
 Returns the latest data items for all series data. A fee will be charged for this call.
 ```
-latest: (Category) -> (vec DataResponse) query;
+latest: (Category) -> (vec DataResponse);
 ```
 
 ### volatility
