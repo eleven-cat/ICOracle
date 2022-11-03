@@ -27,7 +27,8 @@ module {
         sourceName: Text;
     };
     public type DataItem = { value: Nat; timestamp: Timestamp;};
-    public type DataResponse = {name: Text; sid: SeriesId; decimals: Nat; data:(Timestamp, Nat)};
+    public type DataResponse = {name: Text; sid: SeriesId; decimals: Nat; data:(ts: Timestamp, value: Nat)};
+    public type SeriesDataResponse = {name: Text; sid: SeriesId; decimals: Nat; data:[(ts: Timestamp, value: Nat)]};
     public type VolatilityResponse = {open: Nat; high: Nat; low: Nat; close: Nat; average: Nat; percent: Float; decimals: Nat};
     public type RequestLog = {
         request: DataItem;
@@ -60,13 +61,13 @@ module {
     public type Self = actor {
         // paying $OT for cross-canister calling (update call)
         // sid(xdr/usd):0   sid(icp/xdr):1   sid(icp/usd):2
-        get : shared (_sid: SeriesId, _tsSeconds: ?Timestamp) -> async ?{data: (Timestamp, Nat); decimals: Nat}; // 1 x fee
-        getSeries : shared (_sid: SeriesId, _page: ?Nat) -> async {data:[(Timestamp, Nat)]; decimals: Nat}; // 2 x fee
+        get : shared (_sid: SeriesId, _tsSeconds: ?Timestamp) -> async ?DataResponse; // 1 x fee
+        getSeries : shared (_sid: SeriesId, _page: ?Nat) -> async SeriesDataResponse; // 2 x fee
         latest : shared (_cat: Category) -> async [DataResponse]; // 2 x fee
         volatility : shared (_sid: SeriesId, _period: Nat) -> async VolatilityResponse; // 3 x fee
         // free for anonymous off-chain calling (query call)
-        anon_get : shared query (_sid: SeriesId, _tsSeconds: ?Timestamp) -> async ?{data: (Timestamp, Nat); decimals: Nat}; 
-        anon_getSeries : shared query (_sid: SeriesId, _page: ?Nat) -> async {data:[(Timestamp, Nat)]; decimals: Nat}; 
+        anon_get : shared query (_sid: SeriesId, _tsSeconds: ?Timestamp) -> async ?DataResponse; 
+        anon_getSeries : shared query (_sid: SeriesId, _page: ?Nat) -> async SeriesDataResponse; 
         anon_latest : shared query (_cat: Category) -> async [DataResponse]; 
         // oracle / node
         request : shared (_sid: SeriesId, _data: DataItem, signature: ?Blob) -> async (confirmed: Bool);

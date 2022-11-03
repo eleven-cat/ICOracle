@@ -44,6 +44,12 @@ type DataResponse = record {
    name: text;
    sid: SeriesId;
 };
+type SeriesDataResponse = record {
+   data: vec record { Timestamp; nat; };
+   decimals: nat;
+   name: text;
+   sid: SeriesId;
+};
 type DataItem = record {
    timestamp: Timestamp;
    value: nat;
@@ -71,11 +77,11 @@ type Category = variant {
    Weather;
 };
 type ICOracle = service {
-   anon_get: (SeriesId, opt Timestamp) -> (opt record { data: record { Timestamp; nat; }; decimals: nat; }) query;
-   anon_getSeries: (SeriesId, opt nat) -> (record { data: vec record { Timestamp; nat; }; decimals: nat; }) query;
+   anon_get: (SeriesId, opt Timestamp) -> (opt DataResponse) query;
+   anon_getSeries: (SeriesId, opt nat) -> (SeriesDataResponse) query;
    anon_latest: (Category) -> (vec DataResponse) query;
-   get: (SeriesId, opt Timestamp) -> (opt record { data: record { Timestamp; nat;}; decimals: nat;});
-   getSeries: (SeriesId, opt nat) -> (record { data: vec record { Timestamp; nat; }; decimals: nat;});
+   get: (SeriesId, opt Timestamp) -> (opt DataResponse);
+   getSeries: (SeriesId, opt nat) -> (SeriesDataResponse);
    latest: (Category) -> (vec DataResponse);
    volatility: (SeriesId, nat) -> (VolatilityResponse);
    getFee: () -> (nat) query;

@@ -1,5 +1,9 @@
 # ICOracle Changelist
 
+## v0.4.1 Alpha
+
+- update data type
+
 ## v0.4 Alpha
 
 - Fix Bugs

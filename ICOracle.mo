@@ -49,6 +49,7 @@ shared(installMsg) actor class ICOracle() = this {
     type RequestLog = T.RequestLog;
     type Log = T.Log;
     type DataResponse = T.DataResponse;
+    type SeriesDataResponse = T.SeriesDataResponse;
     type VolatilityResponse = T.VolatilityResponse;
 
     // Variables
@@ -851,7 +852,7 @@ shared(installMsg) actor class ICOracle() = this {
                     var url = Text.replace(setting_coinbase.url, #text("{SYMBOL_BASE}"), info.base);
                     url := Text.replace(url, #text("{SYMBOL_QUOTE}"), info.quote);
                     let end = _now();
-                    let start = Nat.sub(end, 60);
+                    let start = Nat.sub(end, 180);
                     url := Text.replace(url, #text("{START}"), Nat.toText(start));
                     url := Text.replace(url, #text("{END}"), Nat.toText(end));
                     let request : IC.CanisterHttpRequestArgs = { //  //
@@ -879,7 +880,9 @@ shared(installMsg) actor class ICOracle() = this {
                         status := response.status;
                         body := Blob.fromArray(response.body);
                         // return (response.status, Blob.fromArray(response.body), result.0, result.1);
-                    } catch (err) {};
+                    } catch (err) {
+                        status := 0;
+                    };
                 };
             };
             return (status, body, setting_coinbase.url, timestamp);
@@ -899,26 +902,26 @@ shared(installMsg) actor class ICOracle() = this {
             case(_){ return null; };
         };
     };
-    public query(msg) func anon_getSeries(_sid: SeriesId, _page: ?Nat): async {data:[(Timestamp, Nat)]; decimals:Nat}{
+    public query(msg) func anon_getSeries(_sid: SeriesId, _page: ?Nat): async SeriesDataResponse{
         assert(_onlyAnon(msg.caller));
         var info: SeriesInfo = _getSeriesInfo(_sid);
         if (info.heartbeat == 0){
-            return {data = []; decimals = info.decimals};
+            return {name = info.name; sid = _sid; data = []; decimals = info.decimals};
         };
         let page = Option.get(_page, 1);
         let periodSeconds = info.heartbeat * 500;
-        return {data = _getSeries(_sid, page, periodSeconds); decimals = info.decimals};
+        return {name = info.name; sid = _sid; data = _getSeries(_sid, page, periodSeconds); decimals = info.decimals};
     };
-    public query(msg) func anon_get(_sid: SeriesId, _tsSeconds: ?Timestamp): async ?{data:(Timestamp, Nat); decimals:Nat}{
+    public query(msg) func anon_get(_sid: SeriesId, _tsSeconds: ?Timestamp): async ?DataResponse{
         assert(_onlyAnon(msg.caller));
         var info: SeriesInfo = _getSeriesInfo(_sid);
         let ts = Option.get(_tsSeconds, _now());
         switch(_getDataItem(_sid, ts)){
-            case(?(res)){ return ?{data = res; decimals = info.decimals}; };
+            case(?(res)){ return ?{name = info.name; sid = _sid; data = res; decimals = info.decimals}; };
             case(_){ return null; };
         };
     };
-    public query(msg) func anon_latest(_cat: T.Category) : async [{name: Text; sid: SeriesId; decimals: Nat; data:(Timestamp, Nat)}]{
+    public query(msg) func anon_latest(_cat: T.Category) : async [DataResponse]{
         assert(_onlyAnon(msg.caller));
         var res: [{name: Text; sid: SeriesId; decimals: Nat; data:(Timestamp, Nat)}] = [];
         for ((sid, info) in Trie.iter(seriesInfo)){
@@ -931,23 +934,23 @@ shared(installMsg) actor class ICOracle() = this {
         };
         return res;
     };
-    public shared(msg) func getSeries(_sid: SeriesId, _page: ?Nat): async {data:[(Timestamp, Nat)]; decimals:Nat}{
+    public shared(msg) func getSeries(_sid: SeriesId, _page: ?Nat): async SeriesDataResponse{
         var info: SeriesInfo = _getSeriesInfo(_sid);
         if (info.heartbeat == 0){
-            return {data = []; decimals = info.decimals};
+            return {name = info.name; sid = _sid; data = []; decimals = info.decimals};
         };
         _chargeFee(msg.caller, 2);
         let page = Option.get(_page, 1);
         let periodSeconds = info.heartbeat * 500; // page size = 500
-        return {data = _getSeries(_sid, page, periodSeconds); decimals = info.decimals};
+        return {name = info.name; sid = _sid; data = _getSeries(_sid, page, periodSeconds); decimals = info.decimals};
     };
-    public shared(msg) func get(_sid: SeriesId, _tsSeconds: ?Timestamp): async ?{data:(Timestamp, Nat); decimals:Nat}{
+    public shared(msg) func get(_sid: SeriesId, _tsSeconds: ?Timestamp): async ?DataResponse{
         var info: SeriesInfo = _getSeriesInfo(_sid);
         let ts = Option.get(_tsSeconds, _now());
         switch(_getDataItem(_sid, ts)){
             case(?(res)){ 
                 _chargeFee(msg.caller, 1);
-                return ?{data = res; decimals = info.decimals}; 
+                return ?{name = info.name; sid = _sid; data = res; decimals = info.decimals}; 
             };
             case(_){ return null; };
         };
@@ -1202,7 +1205,7 @@ shared(installMsg) actor class ICOracle() = this {
                 });
                 if (Trie.size(s) == 0){
                     error := true; 
-                    response := "{\"error\": {\"code\": 400, \"message\": \"Data not available\"}}";
+                    response := "{\"error\": {\"code\": 400, \"message\": \"Unavailable data\"}}";
                 }else{
                     for ((k,v) in Trie.iter(s)){
                         sids := Tools.arrayAppend(sids, [k]);
@@ -1213,7 +1216,7 @@ shared(installMsg) actor class ICOracle() = this {
                     sids := Tools.arrayAppend(sids, [_textToNat(Text.replace(path, #text("/"), ""))]);
                 }catch(e){
                     error := true; 
-                    response := "{\"error\": {\"code\": 400, \"message\": \"Data not available\"}}";
+                    response := "{\"error\": {\"code\": 400, \"message\": \"Unavailable data\"}}";
                 };
             };
             var status: Nat16 = 200;
@@ -1225,7 +1228,7 @@ shared(installMsg) actor class ICOracle() = this {
                         switch(_getDataItem(sid, ts)){
                             case(?(timestamp, value)){ 
                                 if (resData.size() > 0) { resData #= ", " };
-                                resData #= "{\"name\": \""# info.name #"\", \"base\": \""# info.base #"\", \"quote\": \""# info.quote #"\", \"rate\": "# Float.toText(_natToFloat(value) / _natToFloat(10 ** info.decimals)) #", \"timestamp\": "# Nat.toText(timestamp) #" }"; 
+                                resData #= "{\"name\": \""# info.name #"\", \"sid\": \""# Nat.toText(sid) #"\", \"base\": \""# info.base #"\", \"quote\": \""# info.quote #"\", \"rate\": "# Float.toText(_natToFloat(value) / _natToFloat(10 ** info.decimals)) #", \"timestamp\": "# Nat.toText(timestamp) #" }"; 
                             };
                             case(_){};
                         };
@@ -1235,11 +1238,11 @@ shared(installMsg) actor class ICOracle() = this {
                     response := "{\"success\": [" # resData # "]}";
                 }else{
                     status := 400;
-                    response := "{\"error\": {\"code\": 400, \"message\": \"Data not available\"}}";
+                    response := "{\"error\": {\"code\": 400, \"message\": \"Unavailable data\"}}";
                 };
             }else{
                 status := 400;
-                response := "{\"error\": {\"code\": 400, \"message\": \"Data not available\"}}";
+                response := "{\"error\": {\"code\": 400, \"message\": \"Unavailable data\"}}";
             };
             return {
                 status_code = status;
@@ -1344,7 +1347,7 @@ shared(installMsg) actor class ICOracle() = this {
     private stable var Retry_CB: Time.Time = 0;
     private func _heartbeat_fetchCB() : async (){
         let hbid = Int.abs(Time.now()) / 3600000000000; // 1h
-        if (hbid > LastUpdated_CB){ // 
+        if (hbid > LastUpdated_CB){ //
             LastUpdated_CB := hbid;
             if ((await _fetchCB()).0 == 0){
                 Retry_CB := Time.now();

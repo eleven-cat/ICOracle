@@ -59,6 +59,12 @@ type DataResponse = record {
    name: text;
    sid: SeriesId;
 };
+type SeriesDataResponse = record {
+   data: vec record { Timestamp; nat; };
+   decimals: nat;
+   name: text;
+   sid: SeriesId;
+};
 type DataItem = record {
    timestamp: Timestamp;
    value: nat;
@@ -86,11 +92,11 @@ type Category = variant {
    Weather;
 };
 type ICOracle = service {
-   anon_get: (SeriesId, opt Timestamp) -> (opt record { data: record { Timestamp; nat; }; decimals: nat; }) query;
-   anon_getSeries: (SeriesId, opt nat) -> (record { data: vec record { Timestamp; nat; }; decimals: nat; }) query;
+   anon_get: (SeriesId, opt Timestamp) -> (opt DataResponse) query;
+   anon_getSeries: (SeriesId, opt nat) -> (SeriesDataResponse) query;
    anon_latest: (Category) -> (vec DataResponse) query;
-   get: (SeriesId, opt Timestamp) -> (opt record { data: record { Timestamp; nat;}; decimals: nat;});
-   getSeries: (SeriesId, opt nat) -> (record { data: vec record { Timestamp; nat; }; decimals: nat;});
+   get: (SeriesId, opt Timestamp) -> (opt DataResponse);
+   getSeries: (SeriesId, opt nat) -> (SeriesDataResponse);
    latest: (Category) -> (vec DataResponse);
    volatility: (SeriesId, nat) -> (VolatilityResponse);
    getFee: () -> (nat) query;
@@ -116,37 +122,37 @@ Notes.
 ### anon_get
 Returns the latest data item of the series data `SeriesId` before the specified time `Timestamp` (default is current time) by anonymous account query.
 ```
-anon_get: (SeriesId, opt Timestamp) -> (opt record { data: record { Timestamp; nat; }; decimals: nat; }) query;
+anon_get: (SeriesId, opt Timestamp) -> (opt DataResponse) query;
 ```
 
 ### anon_getSeries
 Returns data items of the series data `SeriesId` by anonymous account query. It supports paging function with 500 data per page.
 ```
-anon_getSeries: (SeriesId, page: opt nat) -> (record { data: vec record { Timestamp; nat; }; decimals: nat; }) query;
+anon_getSeries: (SeriesId, page: opt nat) -> (SeriesDataResponse) query;
 ```
 
 ### anon_latest
 Returns the latest data items for all series data by anonymous account query.
 ```
-anon_latest: (Category) -> (vec record { data: record { Timestamp; nat; }; decimals: nat; name: text;sid: SeriesId;}) query;
+anon_latest: (Category) -> (vec DataResponse) query;
 ```
 
 ### get
 Returns the latest data item of the series data `SeriesId` before the specified time `Timestamp` (default is current time). A fee will be charged for this call.
 ```
-get: (SeriesId, opt Timestamp) -> (opt record { data: record { Timestamp; nat; }; decimals: nat; }) query;
+get: (SeriesId, opt Timestamp) -> (opt DataResponse) query;
 ```
 
 ### getSeries
 Returns data items of the series data `SeriesId`. A fee will be charged for this call. It supports paging function with 500 data per page.
 ```
-getSeries: (SeriesId, page: opt nat) -> (record { data: vec record { Timestamp; nat; }; decimals: nat; }) query;
+getSeries: (SeriesId, page: opt nat) -> (SeriesDataResponse) query;
 ```
 
 ### latest
 Returns the latest data items for all series data. A fee will be charged for this call.
 ```
-latest: (Category) -> (vec record { data: record { Timestamp; nat; }; decimals: nat; name: text;sid: SeriesId;}) query;
+latest: (Category) -> (vec DataResponse) query;
 ```
 
 ### volatility
@@ -192,7 +198,7 @@ Specify `{BaseToken}` and `{QuoteToken}` in upper case.
 e.g. https://pncff-zqaaa-aaaai-qnp3a-cai.raw.ic0.app/ICP/USD  
 returns:
 ```
-{"success": [{"name": "gov:10min:icp/usd", "base": "ICP", "quote": "USD", "rate": 5.237900, "timestamp": 1667041267 }]}
+{"success": [{"name": "gov:10min:icp/usd", "sid": "2", "base": "ICP", "quote": "USD", "rate": 5.237900, "timestamp": 1667041267 }]}
 ```
 
 ### [Get] https://pncff-zqaaa-aaaai-qnp3a-cai.raw.ic0.app/{sid}
@@ -200,13 +206,13 @@ Specify `{sid}` with `sid` of series data.
 e.g. https://pncff-zqaaa-aaaai-qnp3a-cai.raw.ic0.app/2  
 returns:
 ```
-{"success": [{"name": "gov:10min:icp/usd", "base": "ICP", "quote": "USD", "rate": 5.237900, "timestamp": 1667041267 }]}
+{"success": [{"name": "gov:10min:icp/usd", "sid": "2", "base": "ICP", "quote": "USD", "rate": 5.237900, "timestamp": 1667041267 }]}
 ```
 
 ### Error
-- 400: Data not available
+- 400: Unavailable data
 ```
-{"error": {"code": 400, "message": "Data not available"}}
+{"error": {"code": 400, "message": "Unavailable data"}}
 ```
 
 
