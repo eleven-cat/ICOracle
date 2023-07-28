@@ -144,7 +144,7 @@ module {
     drc20_txnRecord : shared (Txid) -> async ?TxnRecord;
     drc20_getCoinSeconds : shared query ?Address -> async (CoinSeconds, ?CoinSeconds);
     drc20_dropAccount : shared (?Sa) -> async Bool;
-    drc20_holdersCount : shared query () -> async (balances: Nat, nonces: Nat, dropedAccounts: Nat);
+    drc20_holdersCount : shared query () -> async (balances: Nat, nonces: Nat, dropdedAccounts: Nat);
     ictokens_maxSupply : shared query () -> async ?Nat;
     ictokens_top100 : shared query () -> async [(Address, Amount)];
     ictokens_heldFirstTime : shared query Address -> async ?Int;

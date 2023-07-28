@@ -45,19 +45,12 @@ OT supports [DIP20](https://github.com/Psychedelic/DIP20), [DRC20](https://githu
 **Distribution Rules**:
 - 10% (1,000,000,000 OTs) - Team Reserved
     - It is locked until 0:00 on 1 January 2024 and then released linearly over 2 years.
-- 10% (1,000,000,000 OTs) - Community contribution rewards
-    - Quarterly distribution of up to 50,000,000 OTs.
-- 30% (3,000,000,000 OTs) - Community airdrops
-    - 400,000,000 OTs airdropped to early backers, unlocked at token launch. 
-    - 100,000,000 OTs airdropped every quarter through community events, and the undistributed portion will be destroyed.
-    - The remaining OTs can be requested for partial destruction through a DAO proposal.
-- 10% (1,000,000,000 OTs) - Given to early oracle nodes
+- 70% (7,000,000,000 OTs) - Community airdrops or fair minting
+    - Undistributed token retention will be in the DAO.
+- 5% (500,000,000 OTs) - Given to early oracle nodes
     - Staked in contract for 5 years.
-- 20% (2,000,000,000 OTs) - Given to early adopters
-    - Up to 10,000,000 OTs per project.
-    - Quarterly distribution of up to 60,000,000 OTs.
-- 20% (2,000,000,000 OTs) - Mined by oracle nodes.
-    - Mining supply of 20,000,000 OTs per month, halved every 4 years.
+- 15% (1,500,000,000 OTs) - Mined by oracle nodes.
+    - Mining supply of 15,000,000 OTs per month, halved every 4 years.
 
 ![Distribution](img/OT-Distribution.png)
 

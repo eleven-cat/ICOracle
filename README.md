@@ -112,11 +112,9 @@ Visit: [/Token/README.md](/Token/README.md)
 
 ## Roadmap
 
-- October 2022: launch of website and OnePaper doc; open source alpha version of smart contract and interface; issue token $OT; organization of airdrop events.
-- December 2022: launch Beta version of smart contract and interface; organization of airdrop events.
-- Q1 2023: Launch of v1.0 smart contract and interface, provide crypto market data feeds; launch of staking and ICOracle Node program; organization of airdrop events.
-- Q4 2024: Launch v2.0 smart contract and interface, provide weather, FX and other data feeds.
-- Q2 2025: Launch v3.0 smart contract and interface, provide to flight, sports and other data feeds.
+- Q3 2023: Launch of v1.0 smart contract and interface, provide crypto market data feeds; Design rules for fair distribution of tokens..
+- Q4 2023: Released a new version of the white paper (one-paper) and economic model.
+- 2024: Launch of a derivatives trading market based on ICOracle.
 
 
 ## Disclaimers

@@ -25,7 +25,9 @@ module {
         cacheDuration: Nat; // seconds
         sourceType: SourceType;
         sourceName: Text;
+        weights: ?[(SeriesId, weight: Nat)]; // total weight: 100
     };
+    public type DexPair = (dex: Text, pair: Principal, reciprocal: Bool, token0Decimals: Nat, token1Decimals: Nat);
     public type DataItem = { value: Nat; timestamp: Timestamp;};
     public type DataResponse = {name: Text; sid: SeriesId; decimals: Nat; data:(ts: Timestamp, value: Nat)};
     public type SeriesDataResponse = {name: Text; sid: SeriesId; decimals: Nat; data:[(ts: Timestamp, value: Nat)]};
@@ -47,15 +49,15 @@ module {
         key: Text;
     };
     public type Category = {
-        #Crypto/*0~999*/; 
-        #Currency/*1000~1999*/; 
-        #Commodity/*2000~2999*/; 
-        #Stock/*3000~9999*/; 
-        #Economy/*10000~19999*/; 
-        #Weather/*20000~29999*/;
-        #Other/*30000~99999*/;
-        #Sports/*100000~999999*/;
-        #Social/*1000000~9999999*/;
+        #Crypto; 
+        #Currency; 
+        #Commodity; 
+        #Stock; 
+        #Economy; 
+        #Weather;
+        #Sports;
+        #Social;
+        #Other;
     };
 
     public type Self = actor {
@@ -74,7 +76,7 @@ module {
         // query
         getFee : shared query () -> async Nat;
         getSeriesInfo : shared query (_sid: SeriesId) -> async ?SeriesInfo;
-        getLog : shared query (_sid: SeriesId, _tsSeconds: ?Timestamp) -> async ?Log;
+        getLog : shared query (_sid: SeriesId, _tsSeconds: ?Timestamp) -> async [Log]; //**//
         getWorkload : shared query (_account: Provider) -> async ?(score: Nat, invalid: Nat);
     };
     

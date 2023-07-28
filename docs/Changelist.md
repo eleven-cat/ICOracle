@@ -1,5 +1,13 @@
 # ICOracle Changelist
 
+## v0.5 Alpha
+
+- Reconstructed the ICOracle canister.
+- Fixed HTTP Outcalls bug, Reduced consumption of cycles.
+- Replaced the heartbeat with a timer.
+- Supported ICDex and ICPSwap price data feeds (SNS1/ICP, CHAT/ICP, HOT/ICP, GHOST/ICP).
+- Supported ETH/USD price data feed.
+
 ## v0.4.1 Alpha
 
 - update data type

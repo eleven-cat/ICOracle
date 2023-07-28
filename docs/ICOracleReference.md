@@ -36,6 +36,7 @@ type SeriesInfo = record {
    quote: text;
    sourceType: SourceType;
    sourceName: text;
+   weights: opt vec record{SeriesId; nat};
 };
 type SeriesId = nat;
 type RequestLog = record {
@@ -100,7 +101,7 @@ type ICOracle = service {
    latest: (Category) -> (vec DataResponse);
    volatility: (SeriesId, nat) -> (VolatilityResponse);
    getFee: () -> (nat) query;
-   getLog: (SeriesId, opt Timestamp) -> (opt Log) query;
+   getLog: (SeriesId, opt Timestamp) -> (vec Log) query;
    getSeriesInfo: (SeriesId) -> (opt SeriesInfo) query;
    getWorkload: (Provider) -> (opt record { nat; nat; }) query;
    request: (SeriesId, DataItem, opt blob) -> (bool);
@@ -170,7 +171,7 @@ getFee: () -> (nat) query;
 ### getLog
 Returns Oracles' commit records for the series data `SeriesId` for the specified point in time `Timestamp`.
 ```
-getLog: (SeriesId, opt Timestamp) -> (opt Log) query;
+getLog: (SeriesId, opt Timestamp) -> (vec Log) query;
 ```
 
 ### getSeriesInfo
@@ -193,17 +194,17 @@ request: (SeriesId, DataItem, opt blob) -> (bool);
 
 ## HTTP Request
 
-### [Get] https://pncff-zqaaa-aaaai-qnp3a-cai.raw.ic0.app/{BaseToken}/{QuoteToken}
+### [Get] https://pncff-zqaaa-aaaai-qnp3a-cai.raw.icp0.io/{BaseToken}/{QuoteToken}
 Specify `{BaseToken}` and `{QuoteToken}` in upper case.  
-e.g. https://pncff-zqaaa-aaaai-qnp3a-cai.raw.ic0.app/ICP/USD  
+e.g. https://pncff-zqaaa-aaaai-qnp3a-cai.raw.icp0.io/ICP/USD  
 returns:
 ```
 {"success": [{"name": "gov:10min:icp/usd", "sid": "2", "base": "ICP", "quote": "USD", "rate": 5.237900, "timestamp": 1667041267 }]}
 ```
 
-### [Get] https://pncff-zqaaa-aaaai-qnp3a-cai.raw.ic0.app/{sid}
+### [Get] https://pncff-zqaaa-aaaai-qnp3a-cai.raw.icp0.io/{sid}
 Specify `{sid}` with `sid` of series data.  
-e.g. https://pncff-zqaaa-aaaai-qnp3a-cai.raw.ic0.app/2  
+e.g. https://pncff-zqaaa-aaaai-qnp3a-cai.raw.icp0.io/2  
 returns:
 ```
 {"success": [{"name": "gov:10min:icp/usd", "sid": "2", "base": "ICP", "quote": "USD", "rate": 5.237900, "timestamp": 1667041267 }]}

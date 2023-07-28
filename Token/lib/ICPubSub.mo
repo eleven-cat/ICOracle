@@ -37,6 +37,7 @@ module {
         var setting: Setting = _setting;
         var subscriptions: Trie.Trie<AccountId, Subscription<T>> = Trie.empty();
         var publishMessages = List.nil<(AccountId, T, Message, Nat)>();
+        var countThreads : Nat = 0;
 
         private func keyb(t: Blob) : Trie.Key<Blob> { return { key = t; hash = Blob.hash(t) }; };
         private func getSubCallback(_a: AccountId, _t: T): ?Callback{
@@ -87,6 +88,7 @@ module {
             };
         };
         public func pub() : async (){ //publish
+            countThreads += 1;
             var _publishMessages = List.nil<(AccountId, T, Message, Nat)>();
             var item = List.pop(publishMessages);
             var n : Nat = 0;
@@ -113,7 +115,11 @@ module {
                 item := List.pop(publishMessages);
                 n += 1;
             };
-            publishMessages := _publishMessages;
+            publishMessages := List.append(publishMessages, _publishMessages);
+            countThreads := 0;
+        };
+        public func threads() : Nat{
+            return countThreads;
         };
 
         // for updating

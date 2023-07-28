@@ -27,21 +27,27 @@ module {
       #post;
       #head;
   };
-  public type CanisterHttpRequestArgs = {
+  public type HttpRequestArgs = {
       url : Text;
       max_response_bytes : ?Nat64;
       headers : [HttpHeader];
       body : ?[Nat8];
       method : HttpMethod;
-      transform : ?{
-          #function : shared query CanisterHttpResponsePayload -> async CanisterHttpResponsePayload;
-      };
+      transform : ?TransformRawResponseFunction;
   };
-  public type CanisterHttpResponsePayload = {
-      status : Nat;
-      headers : [HttpHeader];
-      body : [Nat8];
-  };
+  public type TransformRawResponseFunction = {
+        function : shared query TransformArgs -> async HttpResponsePayload;
+        context : Blob;
+    };
+  public type TransformArgs = {
+        response : HttpResponsePayload;
+        context : Blob;
+    };
+  public type HttpResponsePayload = {
+        status : Nat;
+        headers : [HttpHeader];
+        body : [Nat8];
+    };
   public type Self = actor {
     canister_status : shared { canister_id : canister_id } -> async {
         status : { #stopped; #stopping; #running };
@@ -78,6 +84,6 @@ module {
         settings : canister_settings;
       } -> async ();
     // outcalls (sample:https://github.com/dfinity/examples/blob/master/motoko/exchange_rate/src/Main.mo)
-    http_request : CanisterHttpRequestArgs -> async CanisterHttpResponsePayload;
+    http_request : HttpRequestArgs -> async HttpResponsePayload;
   }
 }

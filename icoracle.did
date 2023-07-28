@@ -21,6 +21,7 @@ type SeriesInfo = record {
    quote: text;
    sourceType: SourceType;
    sourceName: text;
+   weights: opt vec record{SeriesId; nat};
 };
 type SeriesId = nat;
 type RequestLog = record {
@@ -85,7 +86,7 @@ type ICOracle = service {
    latest: (Category) -> (vec DataResponse);
    volatility: (SeriesId, nat) -> (VolatilityResponse);
    getFee: () -> (nat) query;
-   getLog: (SeriesId, opt Timestamp) -> (opt Log) query;
+   getLog: (SeriesId, opt Timestamp) -> (vec Log) query;
    getSeriesInfo: (SeriesId) -> (opt SeriesInfo) query;
    getWorkload: (Provider) -> (opt record { nat; nat; }) query;
    request: (SeriesId, DataItem, opt blob) -> (bool);

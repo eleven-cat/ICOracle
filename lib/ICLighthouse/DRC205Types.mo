@@ -124,7 +124,7 @@ module {
         for (t in b.vals()){
             buffer.add(t);
         };
-        return buffer.toArray();
+        return Buffer.toArray(buffer);
     };
   public func generateTxid(_app: AppId, _caller: AccountId, _nonce: Nat): Txid{
     let appType: [Nat8] = [83:Nat8, 87, 65, 80]; //SWAP

@@ -6,7 +6,9 @@
  * Refers     : https://github.com/eleven-cat/ICOracle
  */
 
+import Prelude "mo:base/Prelude";
 import Array "mo:base/Array";
+import ArrayTool "./lib/ArrayTool";
 import Blob "mo:base/Blob";
 import Hash "mo:base/Hash";
 import Int "mo:base/Int";
@@ -26,17 +28,18 @@ import T "./lib/ICOracle";
 import Time "mo:base/Time";
 import Debug "mo:base/Debug";
 import Error "mo:base/Error";
-import Trie "./lib/Trie";
+import Trie "mo:base/Trie";
 import Tools "./lib/ICLighthouse/Tools";
 import Minting "./lib/CyclesMinting";
 import ICHTTP "./lib/ICHTTP";
 import DRC207 "./lib/ICLighthouse/DRC207";
 import IC "./lib/IC";
-import ICSRouter "./lib/ICLighthouse/ICSwapRouter";
+import DexRouter "./lib/ICLighthouse/DexRouter";
 import ICSwap "./lib/ICLighthouse/ICSwap";
 import ICDex "./lib/ICLighthouse/ICDexTypes";
 import Sonic "./lib/Sonic/Sonic";
 import ICPSwap "./lib/ICPSwap/ICPSwap";
+import Timer "mo:base/Timer"
 // import CertifiedData "mo:base/CertifiedData";
 
 shared(installMsg) actor class ICOracle() = this {
@@ -45,6 +48,7 @@ shared(installMsg) actor class ICOracle() = this {
     type HeartbeatId = T.HeartbeatId; // interval: [start, end)
     type Timestamp = T.Timestamp; // seconds
     type SeriesInfo = T.SeriesInfo;
+    type DexPair = T.DexPair;
     type DataItem = T.DataItem;
     type RequestLog = T.RequestLog;
     type Log = T.Log;
@@ -56,10 +60,10 @@ shared(installMsg) actor class ICOracle() = this {
     private let version_: Text = "0.5";
     private let name_: Text = "ICOracle";
     private let tokenCanister = "imeri-bqaaa-aaaai-qnpla-cai"; // $OT
-    private let icswapRouter = "j4d4d-pqaaa-aaaak-aanxq-cai";
+    private let dexRouter = "j4d4d-pqaaa-aaaak-aanxq-cai";
     private let icdexRouter = "ltyfs-qiaaa-aaaak-aan3a-cai";
     private let sonicRouter = "3xwpq-ziaaa-aaaah-qcn4a-cai";
-    private let MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+    private let MAX_RESPONSE_BYTES = 100 * 1024; // 100K
     private stable var setting_apilayer: T.OutCallAPI = { name="";host="";url="";key=""; };
     private stable var setting_binance: T.OutCallAPI = { name="";host="";url="";key=""; };
     private stable var setting_coinmarketcap: T.OutCallAPI = { name="";host="";url="";key=""; };
@@ -70,30 +74,38 @@ shared(installMsg) actor class ICOracle() = this {
     private stable var workloads: Trie.Trie<Provider, (score: Nat, invalid: Nat)> = Trie.empty();
     private stable var index: Nat = 3;
     private stable var seriesInfo: Trie.Trie<SeriesId, (SeriesInfo, Timestamp)> = Trie.empty();
-    private stable var seriesData: Trie.Trie2D<SeriesId, HeartbeatId, DataItem> = Trie.empty();
-    private stable var requestLogs: Trie.Trie2D<SeriesId, HeartbeatId, Log> = Trie.empty();
-    private stable var seriesDataRapid: Trie.Trie2D<SeriesId, HeartbeatId, DataItem> = Trie.empty(); // TODO
-    private stable var requestLogsRapid: Trie.Trie2D<SeriesId, HeartbeatId, Log> = Trie.empty();  // TODO
-    private stable var dexs: Trie.Trie<Text, Principal> = Trie.empty();
+    private stable var seriesData: Trie.Trie2D<SeriesId, HeartbeatId, DataItem> = Trie.empty(); //##//
+    private stable var seriesData2: Trie.Trie2D<SeriesId, HeartbeatId, [DataItem]> = Trie.empty(); // latest data is in position 0.
+    private stable var requestLogs: Trie.Trie2D<SeriesId, HeartbeatId, Log> = Trie.empty(); //##//
+    private stable var requestLogs2: Trie.Trie2D<SeriesId, HeartbeatId, [Log]> = Trie.empty();
+    private stable var dexPairs: Trie.Trie<SeriesId, DexPair> = Trie.empty(); //  dex: "icdex"
 
     // query from trie
     private func triePage<V>(_trie: Trie.Trie<Nat,V>, _start: Nat, _page: Nat, _period: Nat) : [(Nat, V)] {
-        if (_page < 1 or _period < 1){
+        if (_page < 1){
             return [];
         };
         let offset = Nat.sub(_page, 1) * _period;
-        if (offset >= _start){
-            return [];
+        var start: Nat = _start;
+        if (_start > offset){
+            start := Nat.sub(_start, offset);
         };
-        let start = Nat.sub(_start, offset);
         var end: Nat = 0;
         if (start > _period){
             end := Nat.sub(start, _period);
         };
-        let trie = Trie.filter<Nat, V>(_trie, func (k:Nat, v:V): Bool{ k >= end and k <= start });
-        return Iter.toArray(Trie.iter(trie));
-        // let arr = Array.filter(Iter.toArray(Trie.iter(_trie)), func (t:(Nat,V)): Bool{ t.0 >= end and t.0 <= start; });
-        // return arr;
+        var res : [(Nat, V)] = [];
+        var i = start;
+        while(i <= start and i >= end){
+            switch(Trie.get(_trie, keyn(i), Nat.equal)){
+                case(?(v)){
+                    res := ArrayTool.append(res, [(i, v)]);
+                };
+                case(_){};
+            };
+            i -= 1;
+        };
+        return res;
     };
     private func _natToFloat(_n: Nat) : Float{
         return Float.fromInt64(Int64.fromNat64(Nat64.fromNat(_n)));
@@ -117,7 +129,7 @@ shared(installMsg) actor class ICOracle() = this {
         }));
     };
     private func _onlyAnon(_caller: Principal) : Bool{
-        return Tools.principalForm(_caller) == #AnonymousId;
+        return Tools.principalForm(_caller) == #AnonymousId or Tools.principalForm(_caller) == #SelfAuthId;
     };
     private func _isCanister(_caller: Principal) : Bool{
         return Tools.principalForm(_caller) == #OpaqueId;
@@ -137,17 +149,17 @@ shared(installMsg) actor class ICOracle() = this {
         if (info.heartbeat == 0){
             return ();
         };
-        switch(Trie.get(seriesData, keyn(_sid), Nat.equal)){
+        switch(Trie.get(seriesData2, keyn(_sid), Nat.equal)){
             case(?(trie)){
-                let temp = Trie.filter(trie, func (k:HeartbeatId, v:DataItem): Bool{ _now() < k * info.heartbeat + info.cacheDuration });
-                seriesData := Trie.put(seriesData, keyn(_sid), Nat.equal, temp).0;
+                let temp = Trie.filter(trie, func (k:HeartbeatId, v:[DataItem]): Bool{ _now() < k * info.heartbeat + info.cacheDuration });
+                seriesData2 := Trie.put(seriesData2, keyn(_sid), Nat.equal, temp).0;
             };
             case(_){};
         };
-        switch(Trie.get(requestLogs, keyn(_sid), Nat.equal)){
+        switch(Trie.get(requestLogs2, keyn(_sid), Nat.equal)){
             case(?(trie)){
-                let temp = Trie.filter(trie, func (k:HeartbeatId, v:Log): Bool{ _now() < k * info.heartbeat + info.conDuration });
-                requestLogs := Trie.put(requestLogs, keyn(_sid), Nat.equal, temp).0;
+                let temp = Trie.filter(trie, func (k:HeartbeatId, v:[Log]): Bool{ _now() < k * info.heartbeat + info.cacheDuration });
+                requestLogs2 := Trie.put(requestLogs2, keyn(_sid), Nat.equal, temp).0;
             };
             case(_){};
         };
@@ -159,15 +171,15 @@ shared(installMsg) actor class ICOracle() = this {
     };
     private func _categoryCheck(_cat: T.Category, _sid: Nat) : Bool{
         switch(_cat){
-            case(#Crypto){ _sid >= 0 and _sid <= 999 };
+            case(#Crypto){ (_sid > 0 and _sid <= 999) or (_sid >= 10000 and _sid <= 19999) };
             case(#Currency){ _sid >= 1000 and _sid <= 1999 };
-            case(#Commodity){ _sid >= 2000 and _sid <= 2999 };
-            case(#Stock){ _sid >= 3000 and _sid <= 9999 };
-            case(#Economy){ _sid >= 10000 and _sid <= 19999 };
-            case(#Weather){ _sid >= 20000 and _sid <= 29999 };
-            case(#Other){ _sid >= 30000 and _sid <= 99999 };
-            case(#Sports){ _sid >= 100000 and _sid <= 999999 };
-            case(#Social){ _sid >= 1000000 and _sid <= 9999999 };
+            case(#Commodity){ _sid >= 100000 and _sid <= 199999 };
+            case(#Stock){ _sid >= 200000 and _sid <= 299999 };
+            case(#Economy){ _sid >= 300000 and _sid <= 399999 };
+            case(#Weather){ _sid >= 1000000 and _sid <= 1999999 };
+            case(#Sports){ _sid >= 2000000 and _sid <= 2999999 };
+            case(#Social){ _sid >= 3000000 and _sid <= 3999999 };
+            case(#Other){ _sid >= 5000000 and _sid <= 9999999 };
         };
     };
     private func _getSeries(_sid: SeriesId, _page: Nat, _periodSeconds: Nat): [(Timestamp, Nat)]{
@@ -175,12 +187,18 @@ shared(installMsg) actor class ICOracle() = this {
         if (info.heartbeat == 0){
             return [];
         };
-        var start: Nat = _now() / info.heartbeat;
-        var period = _periodSeconds / info.heartbeat + 1;
-        switch(Trie.get(seriesData, keyn(_sid), Nat.equal)){ 
+        var start: Nat = _now() / info.heartbeat; // latest
+        var period = _periodSeconds / info.heartbeat;
+        switch(Trie.get(seriesData2, keyn(_sid), Nat.equal)){ 
             case(?(trie)){
-                return Array.map<(HeartbeatId, DataItem), (Timestamp, Nat)>(triePage<DataItem>(trie, start, _page, period), 
-                    func (t: (HeartbeatId, DataItem)): (Timestamp, Nat){ (t.1.timestamp, t.1.value) }
+                return Array.chain<(HeartbeatId, [DataItem]), (Timestamp, Nat)>(triePage<[DataItem]>(trie, start, _page, period), 
+                    func (t: (HeartbeatId, [DataItem])): [(Timestamp, Nat)]{ 
+                        var res: [(Timestamp, Nat)] = [];
+                        for (item in t.1.vals()){
+                            res := ArrayTool.append(res, [(item.timestamp, item.value)]);
+                        };
+                        return res;
+                    }
                 );
             };
             case(_){
@@ -194,11 +212,23 @@ shared(installMsg) actor class ICOracle() = this {
             return null;
         };
         var pid = _ts / info.heartbeat;
-        switch(Trie.get(seriesData, keyn(_sid), Nat.equal)){
+        var index: Nat = 0;
+        switch(Trie.get(seriesData2, keyn(_sid), Nat.equal)){
             case(?(trie)){
                 while(pid >= _getSeriesCreationTime(_sid) / info.heartbeat){
                     switch(Trie.get(trie, keyn(pid), Nat.equal)){
-                        case(?(v)){ return ?(v.timestamp, v.value); };
+                        case(?(items)){ 
+                            for (i in items.keys()){
+                                if (_ts >= items[i].timestamp){
+                                    index := i;
+                                };
+                            };
+                            if (items.size() > 0){
+                                return ?(items[index].timestamp, items[index].value);
+                            } else {
+                                return null;
+                            };
+                        };
                         case(_){
                             pid -= 1;
                         };
@@ -211,54 +241,84 @@ shared(installMsg) actor class ICOracle() = this {
             };
         };
     };
-    private func _setDataItem(_sid: SeriesId, _pid: HeartbeatId, _value: DataItem): (){
-        seriesData := Trie.put2D(seriesData, keyn(_sid), Nat.equal, keyn(_pid), Nat.equal, _value);
-        _clearCache(_sid);
+    private func _setDataItem(_sid: SeriesId, _pid: HeartbeatId, _value: DataItem, _isAppend: Bool): (){
+        if (not(_isAppend)){
+            seriesData2 := Trie.put2D(seriesData2, keyn(_sid), Nat.equal, keyn(_pid), Nat.equal, [_value]);
+        }else{
+            switch(Trie.get(seriesData2, keyn(_sid), Nat.equal)){
+                case(?(trie)){
+                    switch(Trie.get(trie, keyn(_pid), Nat.equal)){
+                        case(?(items)){
+                            seriesData2 := Trie.put2D(seriesData2, keyn(_sid), Nat.equal, keyn(_pid), Nat.equal, ArrayTool.append([_value], items));
+                        };
+                        case(_){
+                            seriesData2 := Trie.put2D(seriesData2, keyn(_sid), Nat.equal, keyn(_pid), Nat.equal, [_value]);
+                        };
+                    };
+                };
+                case(_){
+                    seriesData2 := Trie.put2D(seriesData2, keyn(_sid), Nat.equal, keyn(_pid), Nat.equal, [_value]);
+                };
+            };
+        };
+        // _clearCache(_sid);
     };
-    private func _getLog(_sid: SeriesId, _pid: HeartbeatId): ?Log{
-        switch(Trie.get(requestLogs, keyn(_sid), Nat.equal)){
+    private func _getLog(_sid: SeriesId, _pid: HeartbeatId): [Log]{
+        switch(Trie.get(requestLogs2, keyn(_sid), Nat.equal)){
             case(?(trie)){
                 switch(Trie.get(trie, keyn(_pid), Nat.equal)){
                     case(?(v)){
-                        return ?v;
+                        return v;
                     };
                     case(_){
-                        return null;
+                        return [];
                     };
                 };
             };
             case(_){
-                return null;
+                return [];
             };
         };
     };
-    private func _requestData(_sid: SeriesId, _pid: HeartbeatId, _item: RequestLog): (){
-        switch(_getLog(_sid, _pid)){
-            case(?(log)){
-                requestLogs := Trie.put2D(requestLogs, keyn(_sid), Nat.equal, keyn(_pid), Nat.equal, {
-                    confirmed = log.confirmed;
-                    requestLogs = Tools.arrayAppend(log.requestLogs, [_item]);
-                });
+    // If multiple data items are to be set in the same pid, the timestamp of the added data item must be the maximum one.
+    private func _requestData(_sid: SeriesId, _pid: HeartbeatId, _item: RequestLog, _index: ?Nat): (){
+        var info: SeriesInfo = _getSeriesInfo(_sid);
+        assert(info.heartbeat > 0);
+        assert(_item.request.timestamp <= _now() + 1);
+        assert(_item.request.timestamp * 10 == _item.request.timestamp * 10 / info.heartbeat * info.heartbeat);
+        var logs = _getLog(_sid, _pid);
+        switch(_index){
+            case(?(index)){
+                let temp = Array.thaw<Log>(logs);
+                temp[index] := {
+                    confirmed = temp[index].confirmed;
+                    requestLogs = ArrayTool.append(temp[index].requestLogs, [_item]);
+                };
+                logs := Array.freeze(temp);
             };
-            case(_){
-                requestLogs := Trie.put2D(requestLogs, keyn(_sid), Nat.equal, keyn(_pid), Nat.equal, {
+            case(_){ // new request group
+                for (log in logs.vals()){
+                    if (log.requestLogs.size() > 0){
+                        assert(_item.request.timestamp > log.requestLogs[0].request.timestamp);
+                    };
+                };
+                logs := ArrayTool.append([{
                     confirmed = false;
-                    requestLogs = [_item]; 
-                });
+                    requestLogs = [_item];
+                }], logs);
             };
         };
-        _clearCache(_sid);
+        requestLogs2 := Trie.put2D(requestLogs2, keyn(_sid), Nat.equal, keyn(_pid), Nat.equal, logs);
+        // _clearCache(_sid);
     };
-    private func _confirmData(_sid: SeriesId, _pid: HeartbeatId): (){
-        switch(_getLog(_sid, _pid)){
-            case(?(log)){
-                requestLogs := Trie.put2D(requestLogs, keyn(_sid), Nat.equal, keyn(_pid), Nat.equal, {
-                    confirmed = true;
-                    requestLogs = log.requestLogs; 
-                });
-            };
-            case(_){};
+    private func _confirmData(_sid: SeriesId, _pid: HeartbeatId, _index: ?Nat): (){
+        let index = Option.get(_index, 0);
+        let logs = Array.thaw<Log>(_getLog(_sid, _pid));
+        logs[index] := {
+            confirmed = true;
+            requestLogs = logs[index].requestLogs; 
         };
+        requestLogs2 := Trie.put2D(requestLogs2, keyn(_sid), Nat.equal, keyn(_pid), Nat.equal, Array.freeze(logs));
     };
     private func _setWorkload(_account: Principal, _score: ?Nat, _invalid: ?Nat) : (){
         switch(Trie.get(workloads, keyp(_account), Principal.equal)){
@@ -274,23 +334,14 @@ shared(installMsg) actor class ICOracle() = this {
             };
         };
     };
+
+    private func _getDexPair(_sid: SeriesId) : ?DexPair{
+        return Trie.get(dexPairs, keyn(_sid), Nat.equal);
+    };
     private func _getSeriesInfo(_sid: SeriesId): SeriesInfo{
-        var info: SeriesInfo = {
-            name = "";
-            base = "";
-            quote = "";
-            decimals = 0;
-            heartbeat = 0; // seconds
-            conMaxDevRate = 0; // ‱ permyriad
-            conMinRequired = 0;
-            conDuration = 0;
-            cacheDuration = 0;
-            sourceType = #HybridOracle;
-            sourceName = "";
-        };
         switch(Trie.get(seriesInfo, keyn(_sid), Nat.equal)){
             case(?(item)){ return item.0 };
-            case(_){ assert(false); return info; };
+            case(_){ Prelude.unreachable(); };
         };
     };
     private func _getSeriesCreationTime(_sid: SeriesId): Nat{
@@ -300,95 +351,122 @@ shared(installMsg) actor class ICOracle() = this {
         };
     };
     
+    private func _getDataIndex(_sid: SeriesId, _pid: HeartbeatId, _ts: Timestamp): (exist: ?Nat){
+        var itemIndex: ?Nat = null;
+        var i : Nat = 0;
+        label Loop for (log in _getLog(_sid, _pid).vals()){
+            if (log.requestLogs.size() > 0){
+                if (_ts == log.requestLogs[0].request.timestamp) {
+                    itemIndex := ?i;
+                    break Loop;
+                };
+            };
+            i += 1;
+        };
+        return itemIndex;
+    };
     private func _setData(_account: Principal, _sid: SeriesId, _request: RequestLog) : (confirmed: Bool){
         var info: SeriesInfo = _getSeriesInfo(_sid);
-        if (info.heartbeat == 0){
-            assert(false);
-        };
+        assert(info.heartbeat > 0);
+        assert(_request.request.timestamp * 10 == _request.request.timestamp * 10 / info.heartbeat * info.heartbeat); // A pid can only contain 10 data items
         let pid = _request.request.timestamp / info.heartbeat;
+        var itemIndex : Nat = 0;
+        var isExisted : Bool = false;
+        let existedIndex: ?Nat = _getDataIndex(_sid, pid, _request.request.timestamp);
+        if (Option.isSome(existedIndex)){
+            itemIndex := Option.get(existedIndex, itemIndex);
+            isExisted := true;
+        };
         //check 
         assert(_now() < _request.request.timestamp + info.conDuration);
         _setWorkload(_account, ?1, null);
-        var puted : Bool = false;
-        switch(_getLog(_sid, pid)){
-            case(?(log)){
-                if (Option.isSome(Array.find(log.requestLogs, func (t:RequestLog):Bool{ t.provider == _request.provider }))) { puted := true; };
-                if (log.confirmed) { return true; };
-            };
-            case(_){};
+        var placed : Bool = false;
+        if (isExisted){
+            let log = _getLog(_sid, pid)[itemIndex];
+            if (Option.isSome(Array.find(log.requestLogs, func (t:RequestLog):Bool{ t.provider == _request.provider }))) { placed := true; };
+            if (log.confirmed) { return true; };
         };
         //put
-        if (not(puted)){
-            _requestData(_sid, pid, _request);
+        if (not(placed)){
+            _requestData(_sid, pid, _request, existedIndex);
         };
         //cons
-        return _consensus(_sid, pid);
+        return _consensus(_sid, pid, itemIndex);
     };
-    private func _consensus(_sid: SeriesId, _pid: HeartbeatId) : (confirmed: Bool){
+    private func _consensus(_sid: SeriesId, _pid: HeartbeatId, _index: Nat) : (confirmed: Bool){
         var info: SeriesInfo = _getSeriesInfo(_sid);
-        if (info.heartbeat == 0){ 
-            assert(false);
-        };
-        switch(_getLog(_sid, _pid)){
-            case(?(log)){
-                if (log.confirmed) { return true; } 
-                else{
-                    var count: Nat = 0;
-                    var sum: Nat = 0;
-                    for (request in log.requestLogs.vals()){
-                        count += 1;
-                        sum += request.request.value;
-                    };
-                    var avg = sum / count;
-                    var confirmed: Nat = 0;
-                    var newSum: Nat = 0;
-                    for (request in log.requestLogs.vals()){
-                        if (request.request.value >= avg and Nat.sub(request.request.value, avg) * 10000 / avg <= info.conMaxDevRate ){ 
-                            confirmed += 1;
-                            newSum +=  request.request.value;
-                        } else if (request.request.value < avg and Nat.sub(avg, request.request.value) * 10000 / avg <= info.conMaxDevRate ){ 
-                            confirmed += 1; 
-                            newSum +=  request.request.value;
-                        };
-                    };
-                    if (confirmed >= info.conMinRequired){
-                        _confirmData(_sid, _pid);
-                        _setDataItem(_sid, _pid, {timestamp = _now(); value = newSum / confirmed });
-                        for (request in log.requestLogs.vals()){
-                            if (request.request.value >= avg and Nat.sub(request.request.value, avg) * 10000 / avg <= info.conMaxDevRate ){ 
-                                _setWorkload(request.provider, ?1, null);
-                            } else if (request.request.value < avg and Nat.sub(avg, request.request.value) * 10000 / avg <= info.conMaxDevRate ){ 
-                                _setWorkload(request.provider, ?1, null);
-                            }else{
-                                _setWorkload(request.provider, null, ?1);
-                            };
-                        };
-                        return true;
-                    }else{
-                        return false;
+        assert(info.heartbeat > 0);
+        let logs = _getLog(_sid, _pid);
+        if (logs.size() > _index){
+            let log = logs[_index];
+            if (log.confirmed) { return true; } 
+            else{
+                var count: Nat = 0;
+                var sum: Nat = 0;
+                var ts: Nat = 0;
+                for (request in log.requestLogs.vals()){
+                    count += 1;
+                    sum += request.request.value;
+                    if (ts == 0){
+                        ts := request.request.timestamp;
                     };
                 };
+                var avg = sum / count;
+                var confirmed: Nat = 0;
+                var newSum: Nat = 0;
+                for (request in log.requestLogs.vals()){
+                    if (request.request.value >= avg and Nat.sub(request.request.value, avg) * 10000 / avg <= info.conMaxDevRate ){ 
+                        confirmed += 1;
+                        newSum +=  request.request.value;
+                    } else if (request.request.value < avg and Nat.sub(avg, request.request.value) * 10000 / avg <= info.conMaxDevRate ){ 
+                        confirmed += 1; 
+                        newSum +=  request.request.value;
+                    };
+                };
+                var isAppendData: Bool = false;
+                if (ts > info.heartbeat * _pid){
+                    isAppendData := true;
+                };
+                if (confirmed >= info.conMinRequired){
+                    _confirmData(_sid, _pid, ?_index);
+                    _setDataItem(_sid, _pid, {timestamp = ts; value = newSum / confirmed }, isAppendData);
+                    for (request in log.requestLogs.vals()){
+                        if (request.request.value >= avg and Nat.sub(request.request.value, avg) * 10000 / avg <= info.conMaxDevRate ){ 
+                            _setWorkload(request.provider, ?1, null);
+                        } else if (request.request.value < avg and Nat.sub(avg, request.request.value) * 10000 / avg <= info.conMaxDevRate ){ 
+                            _setWorkload(request.provider, ?1, null);
+                        }else{
+                            _setWorkload(request.provider, null, ?1);
+                        };
+                    };
+                    return true;
+                }else{
+                    return false;
+                };
             };
-            case(_){ return false; };
+        }else{
+            return false;
         };
     };
     // auto request
-    private func _requestFromICSwap(_sid: SeriesId, _pair: Principal, _reverse: Bool): async (){
-        let dex: ICSwap.Self = actor(Principal.toText(_pair));
+    private func _requestFromICDex(_sid: SeriesId, _pair: Principal, _reverse: Bool, decimals0: Nat, decimals1: Nat): async* (){
+        let dex: ICDex.Self = actor(Principal.toText(_pair));
         let provider = Principal.fromActor(this);
         let liquid = await dex.liquidity(null);
+        var info: SeriesInfo = _getSeriesInfo(_sid);
+        assert(info.heartbeat > 0);
         switch(Trie.get(seriesInfo, keyn(_sid), Nat.equal)){
             case(?(item)){
                 let decimals = item.0.decimals;
                 var conversionRate: Nat = 0;
                 if (not(_reverse) and liquid.value0 > 0){
-                    conversionRate := (10**decimals) * liquid.value1 / liquid.value0;
+                    conversionRate := (10 ** (decimals+decimals0)) * liquid.value1 / liquid.value0  / (10**decimals1);
                 }else if (liquid.value1 > 0){
-                    conversionRate := (10**decimals) * liquid.value0 / liquid.value1;
+                    conversionRate := (10 ** (decimals+decimals1)) * liquid.value0 / liquid.value1  / (10**decimals0);
                 };
                 if (conversionRate > 0){
                     var req : RequestLog = {
-                        request = { value = conversionRate; timestamp = _now(); };
+                        request = { value = conversionRate; timestamp = _now() / info.heartbeat * info.heartbeat; };
                         provider = provider;
                         time = _now();
                         signature = null;
@@ -399,37 +477,79 @@ shared(installMsg) actor class ICOracle() = this {
             case(_){};
         };
     };
-    private func _requestFromDex(_sid: SeriesId, _dexName: Text, _pair: Principal, _reverse: Bool) : async (){
-        if (_dexName == "icswap"){
-            await _requestFromICSwap(_sid, _pair, _reverse);
-        };
-    };
-    private func _requestFromDexByTokens(_sid: SeriesId, _dexName: Text, _token0: Principal, _token1: Principal, _reverse: Bool) : async (){
-        if (_dexName == "icswap"){
-            let router: ICSRouter.Self = actor(icswapRouter); 
-            let temp = await router.route(_token0, _token1, ?_dexName);
-            if (temp.size() > 0){
-                await _requestFromICSwap(_sid, temp[0].0, _reverse);
+    private func _requestFromICPSwap(_sid: SeriesId, _pair: Principal, _reverse: Bool, decimals0: Nat, decimals1: Nat): async* (){
+        let dex: ICPSwap.Self = actor(Principal.toText(_pair));
+        let provider = Principal.fromActor(this);
+        let quoteAmount : Text = Nat.toText(10 ** (if (_reverse) {decimals0} else {decimals1}));
+        let liquid = await dex.quote({
+                operator = Principal.fromActor(this);
+                amountIn = quoteAmount;
+                zeroForOne = _reverse;
+                amountOutMinimum = "1";
+            });
+        var info: SeriesInfo = _getSeriesInfo(_sid);
+        assert(info.heartbeat > 0);
+        switch(liquid){
+            case(#ok(baseAmount)){
+                let value0 = baseAmount;
+                let value1 = Option.get(Nat.fromText(quoteAmount), 0);
+                let conversionRate = (10 ** (info.decimals+decimals0)) * value1 / value0  / (10**decimals1);
+                if (conversionRate > 0){
+                    var req : RequestLog = {
+                        request = { value = conversionRate; timestamp = _now() / info.heartbeat * info.heartbeat; };
+                        provider = provider;
+                        time = _now();
+                        signature = null;
+                    };
+                    ignore _setData(provider, _sid, req);
+                };
             };
+            case(_){};
         };
     };
-    private func _requestIcpXdr() : async (){
+    private func _requestFromDex(_sid: SeriesId, _dexName: Text, _pair: Principal, _reverse: Bool, decimals0: Nat, decimals1: Nat) : async* (){
+        if (_dexName == "icdex"){
+            await* _requestFromICDex(_sid, _pair, _reverse, decimals0, decimals1);
+        }else if (_dexName == "icpswap"){
+            await* _requestFromICPSwap(_sid, _pair, _reverse, decimals0, decimals1);
+        };
+    };
+    // private func _requestFromDexByTokens(_sid: SeriesId, _dexName: Text, _token0: Principal, _token1: Principal, _reverse: Bool) : async* (){
+    //     if (_dexName == "icdex"){
+    //         let router: DexRouter.Self = actor(dexRouter); 
+    //         let temp = await router.route(_token0, _token1, ?_dexName);
+    //         if (temp.size() > 0){
+    //             await* _requestFromICDex(_sid, temp[0].0, _reverse);
+    //         };
+    //     };
+    // };
+    private func _requestIcpXdr() : async* (){
         var sid: Nat = 1;
         let provider = Principal.fromActor(this);
         let minting: Minting.Self = actor("rkp4c-7iaaa-aaaaa-aaaca-cai");
         let icpXdr = await minting.get_icp_xdr_conversion_rate();
+        var info: SeriesInfo = _getSeriesInfo(sid);
+        assert(info.heartbeat > 0);
         var req : RequestLog = {
-            request = { value = Nat64.toNat(icpXdr.data.xdr_permyriad_per_icp); timestamp = Nat64.toNat(icpXdr.data.timestamp_seconds); };
+            request = { 
+                value = Nat64.toNat(icpXdr.data.xdr_permyriad_per_icp); 
+                timestamp = Nat64.toNat(icpXdr.data.timestamp_seconds) / info.heartbeat * info.heartbeat;
+            };
             provider = provider;
             time = _now();
             signature = null;
         };
         ignore _setData(provider, sid, req);
         sid := 2;
-        switch(_getDataItem(0, _now())){
+        info := _getSeriesInfo(sid);
+        assert(info.heartbeat > 0);
+        switch(_getDataItem(1000, _now())){ // XDR/USD
             case(?(xdrUsd)){
                 req := {
-                    request = { value = req.request.value * xdrUsd.1 / 10000; timestamp = Nat64.toNat(icpXdr.data.timestamp_seconds); };
+                    request = { 
+                        value = req.request.value * xdrUsd.1 / 10000; 
+                        timestamp = Nat64.toNat(icpXdr.data.timestamp_seconds) / info.heartbeat * info.heartbeat; 
+                    };
                     provider = provider;
                     time = _now();
                     signature = null;
@@ -438,6 +558,34 @@ shared(installMsg) actor class ICOracle() = this {
             };
             case(_){};
         };
+    };
+    private func _fetchICDex() : async* (){ 
+            for((sid, (info,time)) in Trie.iter(seriesInfo)){
+                if (info.heartbeat > 0 and (_categoryCheck(#Crypto, sid) and info.sourceName == "icdex")){
+                    switch(_getDexPair(sid)){
+                        case(?(dex, pair, reciprocal, decimals0, decimals1)){
+                            try{
+                                await* _requestFromDex(sid, info.sourceName, pair, reciprocal, decimals0, decimals1);
+                            } catch (err) {}; 
+                        };
+                        case(_){};
+                    };
+                };
+            };
+    };
+    private func _fetchICPSwap() : async* (){ 
+            for((sid, (info,time)) in Trie.iter(seriesInfo)){
+                if (info.heartbeat > 0 and (_categoryCheck(#Crypto, sid) and info.sourceName == "icpswap")){
+                    switch(_getDexPair(sid)){
+                        case(?(dex, pair, reciprocal, decimals0, decimals1)){
+                            try{
+                                await* _requestFromDex(sid, info.sourceName, pair, reciprocal, decimals0, decimals1);
+                            } catch (err) {}; 
+                        };
+                        case(_){};
+                    };
+                };
+            };
     };
     // https outcalls
     private func _textToNat(txt : Text) : Nat {
@@ -487,10 +635,10 @@ shared(installMsg) actor class ICOracle() = this {
     private func _floatToNat(_data : Float, _decimals: Nat) : Nat {
         return Int.abs(Float.toInt(_data * _natToFloat(10 ** _decimals)));
     };
-    public query func _call_transform(raw : IC.CanisterHttpResponsePayload) : async IC.CanisterHttpResponsePayload {
-        let transformed : IC.CanisterHttpResponsePayload = {
-            status = raw.status;
-            body = raw.body;
+    public query func _call_transform(raw : IC.TransformArgs) : async IC.HttpResponsePayload {
+        let transformed : IC.HttpResponsePayload = {
+            status = raw.response.status;
+            body = raw.response.body;
             headers = [
                 { name = "Content-Security-Policy"; value = "default-src 'self'"; },
                 { name = "Referrer-Policy"; value = "strict-origin" },
@@ -502,7 +650,7 @@ shared(installMsg) actor class ICOracle() = this {
         };
         return transformed;
     };
-    private func _decodeTS(_result : IC.CanisterHttpResponsePayload) : (Text, Nat) {
+    private func _decodeTS(_result : IC.HttpResponsePayload) : (Text, Nat) {
         var txt : Text = "";
         switch (Text.decodeUtf8(Blob.fromArray(_result.body))) {
             case null { assert(false); return ("", 0); };
@@ -533,7 +681,7 @@ shared(installMsg) actor class ICOracle() = this {
             };
         };
     };
-    private func _decodeFX(_result : IC.CanisterHttpResponsePayload, _curr: Text, _decimals: Nat) : (Text, Nat) {
+    private func _decodeFX(_result : IC.HttpResponsePayload, _curr: Text, _decimals: Nat) : (Text, Nat) {
         var txt : Text = "";
         switch (Text.decodeUtf8(Blob.fromArray(_result.body))) {
             case null { assert(false); return ("", 0); };
@@ -575,7 +723,7 @@ shared(installMsg) actor class ICOracle() = this {
         };
         return args;
     };
-    private func _fetchFX() : async (Nat, Blob, Text,Nat){ // (Nat, Blob, Text,Nat)
+    private func _fetchFX() : async* (Nat, Blob, Text,Nat){ // (Nat, Blob, Text,Nat)
         // var n1: Nat = 0;
         // var n2: Nat = 0;
         let host : Text = setting_apilayer.host;
@@ -585,13 +733,13 @@ shared(installMsg) actor class ICOracle() = this {
             { name = "apikey"; value = setting_apilayer.key },
             //{ name = "User-Agent"; value = "PostmanRuntime/7.29.2" }
         ];
-        let request : IC.CanisterHttpRequestArgs = { // "https://api.apilayer.com/fixer/latest?base=USD&symbols=XDR,EUR,GBP,JPY,AUD,CHF,NZD,CAD,HKD,CNY,KRW"
+        let request : IC.HttpRequestArgs = { // "https://api.apilayer.com/fixer/latest?base=USD&symbols=XDR,EUR,GBP,JPY,AUD,CHF,NZD,CAD,HKD,CNY,KRW"
             url = Text.replace(setting_apilayer.url, #text("{SYMBOLS}"), _joinArgsFX()); //"https://api.apilayer.com/exchangerates_data/latest?base=USD&symbols=XDR,EUR,GBP,JPY,AUD,CHF,NZD,CAD,HKD,SGD,CNY,KRW,TRY,INR,RUB,MXN,ZAR,SEK,DKK,THB,VND,MYR,TWD,BRL";
-            max_response_bytes = ?Nat64.fromNat(MAX_RESPONSE_BYTES);
+            max_response_bytes = ?2000;  // ?Nat64.fromNat(MAX_RESPONSE_BYTES);
             headers = request_headers;
             body = null;
             method = #get;
-            transform = ?(#function(_call_transform));
+            transform = ?{function = _call_transform; context = Blob.fromArray([]) };
         };
         //try {
             Cycles.add(220_000_000_000);
@@ -603,12 +751,12 @@ shared(installMsg) actor class ICOracle() = this {
             let ts = _decodeTS(response);
             let timestamp = ts.1;
             for((sid, (info,time)) in Trie.iter(seriesInfo)){
-                if (sid == 0 or (_categoryCheck(#Currency, sid) and info.sourceName == "apilayer")){
+                if (info.heartbeat > 0 and (sid == 0 or (_categoryCheck(#Currency, sid) and info.sourceName == "apilayer"))){
                     try{
                         let result = _decodeFX(response, info.base, info.decimals);
                         if (result.1 > 0){
                             var req : RequestLog = {
-                                request = { value = result.1; timestamp = timestamp; };
+                                request = { value = result.1; timestamp = timestamp / info.heartbeat * info.heartbeat; };
                                 provider = provider;
                                 time = _now();
                                 signature = null;
@@ -625,7 +773,7 @@ shared(installMsg) actor class ICOracle() = this {
         //     return (0, Blob.fromArray([]), "Error", 0);
         // };
     };
-    private func _decodeBA(_result : IC.CanisterHttpResponsePayload, _curr: Text, _decimals: Nat) : (Text, Nat) {
+    private func _decodeBA(_result : IC.HttpResponsePayload, _curr: Text, _decimals: Nat) : (Text, Nat) {
         var txt : Text = "";
         switch (Text.decodeUtf8(Blob.fromArray(_result.body))) {
             case null { assert(false); return ("", 0); };
@@ -658,7 +806,7 @@ shared(installMsg) actor class ICOracle() = this {
         };
         return args;
     };
-    private func _fetchBA() : async (Nat, Blob, Text,Nat){ // (Nat, Blob, Text,Nat)
+    private func _fetchBA() : async* (Nat, Blob, Text,Nat){ // (Nat, Blob, Text,Nat)
         // var n1: Nat = 0;
         // var n2: Nat = 0;
         let host : Text = setting_binance.host;
@@ -668,13 +816,13 @@ shared(installMsg) actor class ICOracle() = this {
             //{ name = "apikey"; value = setting_binance.key },
             //{ name = "User-Agent"; value = "PostmanRuntime/7.29.2" }
         ];
-        let request : IC.CanisterHttpRequestArgs = { // Text.replace(setting_binance.url, #text("{SYMBOLS}"), _joinArgsBA()); //
+        let request : IC.HttpRequestArgs = { // Text.replace(setting_binance.url, #text("{SYMBOLS}"), _joinArgsBA()); //
             url = Text.replace(setting_binance.url, #text("{SYMBOLS}"), _joinArgsBA()); // "https://api.binance.com/api/v3/ticker/price?symbols=[%22BTCUSDT%22,%22BNBUSDT%22]";
-            max_response_bytes = ?Nat64.fromNat(MAX_RESPONSE_BYTES);
+            max_response_bytes = ?5000;
             headers = request_headers;
             body = null;
             method = #get;
-            transform = ?(#function(_call_transform));
+            transform = ?{function = _call_transform; context = Blob.fromArray([]) };
         };
         //for debug // return (0, Blob.fromArray([]), request.url, 0);
         //try {
@@ -686,12 +834,12 @@ shared(installMsg) actor class ICOracle() = this {
             let provider = Principal.fromActor(this);
             let timestamp = _now();
             for((sid, (info,time)) in Trie.iter(seriesInfo)){
-                if (_categoryCheck(#Crypto, sid) and info.sourceName == "binance"){
+                if (info.heartbeat > 0 and _categoryCheck(#Crypto, sid) and info.sourceName == "binance"){
                     try {
                         let result = _decodeBA(response, info.base#info.quote, info.decimals);
                         if (result.1 > 0){
                             var req : RequestLog = {
-                                request = { value = result.1; timestamp = timestamp; };
+                                request = { value = result.1; timestamp = timestamp / info.heartbeat * info.heartbeat; };
                                 provider = provider;
                                 time = _now();
                                 signature = null;
@@ -708,7 +856,7 @@ shared(installMsg) actor class ICOracle() = this {
         //     return (0, Blob.fromArray([]), "Error", 0);
         // };
     };
-    private func _decodeCMC(_result : IC.CanisterHttpResponsePayload, _curr: Text, _decimals: Nat) : (Text, Nat) {
+    private func _decodeCMC(_result : IC.HttpResponsePayload, _curr: Text, _decimals: Nat) : (Text, Nat) {
         var txt : Text = "";
         switch (Text.decodeUtf8(Blob.fromArray(_result.body))) {
             case null { assert(false); return ("", 0); };
@@ -736,9 +884,9 @@ shared(installMsg) actor class ICOracle() = this {
             };
         };
     };
-    public query func _cmc_transform(raw : IC.CanisterHttpResponsePayload) : async IC.CanisterHttpResponsePayload {
+    public query func _cmc_transform(raw : IC.TransformArgs) : async IC.HttpResponsePayload {
         var txt : Text = "";
-        switch (Text.decodeUtf8(Blob.fromArray(raw.body))) {
+        switch (Text.decodeUtf8(Blob.fromArray(raw.response.body))) {
             case null {};
             case (?decoded) {
                 var i: Nat = 0;
@@ -750,8 +898,8 @@ shared(installMsg) actor class ICOracle() = this {
                 };
             };
         };
-        let transformed : IC.CanisterHttpResponsePayload = {
-            status = raw.status;
+        let transformed : IC.HttpResponsePayload = {
+            status = raw.response.status;
             body = Blob.toArray(Text.encodeUtf8(txt));
             headers = [
                 { name = "Content-Security-Policy"; value = "default-src 'self'"; },
@@ -764,7 +912,7 @@ shared(installMsg) actor class ICOracle() = this {
         };
         return transformed;
     };
-    private func _fetchCMC() : async (Nat, Blob, Text,Nat){ // (Nat, Blob, Text,Nat)
+    private func _fetchCMC() : async* (Nat, Blob, Text,Nat){ // (Nat, Blob, Text,Nat)
         // var n1: Nat = 0;
         // var n2: Nat = 0;
         let host : Text = setting_coinmarketcap.host;
@@ -774,13 +922,13 @@ shared(installMsg) actor class ICOracle() = this {
             { name = "CMC_PRO_API_KEY"; value = setting_coinmarketcap.key },
             //{ name = "User-Agent"; value = "PostmanRuntime/7.29.2" }
         ];
-        let request : IC.CanisterHttpRequestArgs = { // Text.replace(setting_coinmarketcap.url, #text("{SYMBOLS}"), _joinArgsCMC()); //
+        let request : IC.HttpRequestArgs = { // Text.replace(setting_coinmarketcap.url, #text("{SYMBOLS}"), _joinArgsCMC()); //
             url = setting_coinmarketcap.url;
             max_response_bytes = ?Nat64.fromNat(MAX_RESPONSE_BYTES);
             headers = request_headers;
             body = null;
             method = #get;
-            transform = ?(#function(_cmc_transform));
+            transform = ?{function = _call_transform; context = Blob.fromArray([]) };
         };
         //for debug // return (0, Blob.fromArray([]), request.url, 0);
         //try {
@@ -792,12 +940,12 @@ shared(installMsg) actor class ICOracle() = this {
             let provider = Principal.fromActor(this);
             let timestamp = _now();
             for((sid, (info,time)) in Trie.iter(seriesInfo)){
-                if (_categoryCheck(#Crypto, sid) and info.sourceName == "coinmarketcap"){
+                if (info.heartbeat > 0 and _categoryCheck(#Crypto, sid) and info.sourceName == "coinmarketcap"){
                     try {
                         let result = _decodeCMC(response, info.base, info.decimals);
                         if (result.1 > 0){
                             var req : RequestLog = {
-                                request = { value = result.1; timestamp = timestamp; };
+                                request = { value = result.1; timestamp = timestamp / info.heartbeat * info.heartbeat; };
                                 provider = provider;
                                 time = _now();
                                 signature = null;
@@ -814,7 +962,7 @@ shared(installMsg) actor class ICOracle() = this {
         //     return (0, Blob.fromArray([]), "Error", 0);
         // };
     };
-    private func _decodeCB(_result : IC.CanisterHttpResponsePayload, _curr: Text, _decimals: Nat) : (Text, Nat) {
+    private func _decodeCB(_result : IC.HttpResponsePayload, _curr: Text, _decimals: Nat) : (Text, Nat) {
         var txt : Text = "";
         switch (Text.decodeUtf8(Blob.fromArray(_result.body))) {
             case null { assert(false); return ("", 0); };
@@ -830,7 +978,7 @@ shared(installMsg) actor class ICOracle() = this {
             };
         };
     };
-    private func _fetchCB() : async (Nat, Blob, Text,Nat){ // (Nat, Blob, Text,Nat)
+    private func _fetchCB() : async* (Nat, Blob, Text,Nat){ // (Nat, Blob, Text,Nat)
         // var n1: Nat = 0;
         // var n2: Nat = 0;
         let host : Text = setting_coinbase.host;
@@ -848,20 +996,20 @@ shared(installMsg) actor class ICOracle() = this {
             var status: Nat = 200;
             var body: Blob = Blob.fromArray([]);
             for((sid, (info,time)) in Trie.iter(seriesInfo)){
-                if (_categoryCheck(#Crypto, sid) and info.sourceName == "coinbase"){
+                if (info.heartbeat > 0 and _categoryCheck(#Crypto, sid) and info.sourceName == "coinbase"){
                     var url = Text.replace(setting_coinbase.url, #text("{SYMBOL_BASE}"), info.base);
                     url := Text.replace(url, #text("{SYMBOL_QUOTE}"), info.quote);
                     let end = _now();
                     let start = Nat.sub(end, 180);
                     url := Text.replace(url, #text("{START}"), Nat.toText(start));
                     url := Text.replace(url, #text("{END}"), Nat.toText(end));
-                    let request : IC.CanisterHttpRequestArgs = { //  //
+                    let request : IC.HttpRequestArgs = { //  //
                         url = url;
-                        max_response_bytes = ?Nat64.fromNat(MAX_RESPONSE_BYTES);
+                        max_response_bytes = ?2000;
                         headers = request_headers;
                         body = null;
                         method = #get;
-                        transform = ?(#function(_call_transform));
+                        transform = ?{function = _call_transform; context = Blob.fromArray([]) };
                     };
                     try {
                         Cycles.add(220_000_000_000);
@@ -870,7 +1018,7 @@ shared(installMsg) actor class ICOracle() = this {
                         let result = _decodeCB(response, info.base, info.decimals);
                         if (result.1 > 0){
                             var req : RequestLog = {
-                                request = { value = result.1; timestamp = timestamp; };
+                                request = { value = result.1; timestamp = timestamp / info.heartbeat * info.heartbeat; };
                                 provider = provider;
                                 time = _now();
                                 signature = null;
@@ -927,7 +1075,7 @@ shared(installMsg) actor class ICOracle() = this {
         for ((sid, info) in Trie.iter(seriesInfo)){
             if (_categoryCheck(_cat, sid)){
                 switch(_getDataItem(sid, _now())){
-                    case(?(v)){ res := Tools.arrayAppend(res, [{name=info.0.name; sid=sid; decimals=info.0.decimals; data=v}]) };
+                    case(?(v)){ res := ArrayTool.append(res, [{name=info.0.name; sid=sid; decimals=info.0.decimals; data=v}]) };
                     case(_){};
                 };
             };
@@ -962,7 +1110,7 @@ shared(installMsg) actor class ICOracle() = this {
                 switch(_getDataItem(sid, _now())){
                     case(?(v)){ 
                         _chargeFee(msg.caller, 2);
-                        res := Tools.arrayAppend(res, [{name=info.0.name; sid=sid; decimals=info.0.decimals; data=v}]) 
+                        res := ArrayTool.append(res, [{name=info.0.name; sid=sid; decimals=info.0.decimals; data=v}]) 
                     };
                     case(_){};
                 };
@@ -972,9 +1120,7 @@ shared(installMsg) actor class ICOracle() = this {
     };
     public shared(msg) func volatility(_sid: SeriesId, _period: Nat): async VolatilityResponse{
         var info: SeriesInfo = _getSeriesInfo(_sid);
-        if (info.heartbeat == 0){
-            assert(false);
-        };
+        assert(info.heartbeat > 0);
         assert(_period <= info.heartbeat * 4320); // 1min*4320 = 3d   5min*4320 = 15d
         let s = _getSeries(_sid, 1, _period);
         var count: Nat = 0;
@@ -1000,12 +1146,10 @@ shared(installMsg) actor class ICOracle() = this {
         };
         return {open = open; high = high; low = low; close = close; average = avg; percent = res; decimals = info.decimals};
     };
-    public query func getLog(_sid: SeriesId, _tsSeconds: ?Timestamp): async ?Log{
+    public query func getLog(_sid: SeriesId, _tsSeconds: ?Timestamp): async [Log]{
         let ts = Option.get(_tsSeconds, _now());
         var info: SeriesInfo = _getSeriesInfo(_sid);
-        if (info.heartbeat == 0){
-            assert(false);
-        };
+        assert(info.heartbeat > 0);
         let pid = ts / info.heartbeat;
         return _getLog(_sid, pid);
     };
@@ -1013,8 +1157,10 @@ shared(installMsg) actor class ICOracle() = this {
     public shared(msg) func request(_sid: SeriesId, _data: DataItem, signature: ?Blob) : async (confirmed: Bool){
         assert(_onlyProvider(msg.caller, _sid));
         let provider = _getProvider(msg.caller);
+        var info: SeriesInfo = _getSeriesInfo(_sid);
+        assert(info.heartbeat > 0);
         let req : RequestLog = {
-            request = _data;
+            request = { value = _data.value; timestamp = _data.timestamp / info.heartbeat * info.heartbeat; };
             provider = provider;
             time = _now();
             signature = signature;
@@ -1028,23 +1174,28 @@ shared(installMsg) actor class ICOracle() = this {
     // Debug
     public shared(msg) func debug_fetchFX() : async (Nat, Blob, Text, Nat){ // (Nat, Blob, Text, Nat)
         assert(_onlyOwner(msg.caller));
-        return await _fetchFX();
+        return await* _fetchFX();
     };
-    public shared(msg) func debug_fetchBA() : async (Nat, Blob, Text, Nat){ // (Nat, Blob, Text, Nat)
+    public shared(msg) func debug_fetchBA() : async (Nat, Blob, Text, Nat){ // (Nat, Blob, Text, Nat) //ip4
         assert(_onlyOwner(msg.caller));
-        return await _fetchBA();
+        return await* _fetchBA();
     };
     public shared(msg) func debug_fetchCB() : async (Nat, Blob, Text, Nat){ // (Nat, Blob, Text, Nat)
         assert(_onlyOwner(msg.caller));
-        return await _fetchCB();
+        return await* _fetchCB();
     };
-    public shared(msg) func debug_fetchCMC() : async (Nat, Blob, Text, Nat){ // (Nat, Blob, Text, Nat)
+    public shared(msg) func debug_fetchCMC() : async (Nat, Blob, Text, Nat){ // (Nat, Blob, Text, Nat) //ip4
         assert(_onlyOwner(msg.caller));
-        return await _fetchCMC();
+        return await* _fetchCMC();
     };
     public shared(msg) func debug_requestIcpXdr() : async (){
         assert(_onlyOwner(msg.caller));
-        await _requestIcpXdr();
+        await* _requestIcpXdr();
+    };
+    public shared(msg) func debug_requestDex() : async (){
+        assert(_onlyOwner(msg.caller));
+        await* _fetchICDex();
+        await* _fetchICPSwap();
     };
     
 
@@ -1055,7 +1206,7 @@ shared(installMsg) actor class ICOracle() = this {
         assert(_onlyOwner(msg.caller));
         fee := _fee;
     };
-    // setApi '("apilayer", record{name="apilayer"; host="api.apilayer.com"; url="https://api.apilayer.com/exchangerates_data/latest?base=USD&symbols={SYMBOLS}"; key="......"})'        // {SYMBOLS} = XDR,EUR,GBP,JPY
+    // setApi '("apilayer", record{name="apilayer"; host="api.apilayer.com"; url="https://api.apilayer.com/fixer/latest?base=USD&symbols={SYMBOLS}"; key="......"})'        // {SYMBOLS} = XDR,EUR,GBP,JPY
     // setApi '("binance", record{name="binance"; host="api.binance.com"; url="https://api.binance.com/api/v3/ticker/price?symbols=[{SYMBOLS}]"; key=""})'        // {SYMBOLS} = %22BTCUSDT%22,%22BNBUSDT%22
     // setApi '("coinmarketcap", record{name="coinmarketcap"; host="pro.coinmarketcap.com"; url="https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest?start=1&limit=50&convert=USD"; key="......"})'  
     // setApi '("coinbase", record{name="coinbase"; host="api.pro.coinbase.com"; url="https://api.pro.coinbase.com/products/{SYMBOL_BASE}-{SYMBOL_QUOTE}/candles?start={START}&end={END}&granularity=60"; key=""})'  
@@ -1086,7 +1237,7 @@ shared(installMsg) actor class ICOracle() = this {
         switch(List.find(providers, func (t: (Provider, [SeriesId], [Principal])): Bool{ _account == t.0 })){
             case(?(provider)){ 
                 providers := List.filter(providers, func (t: (Provider,[SeriesId], [Principal])): Bool{ t.0 != _account });
-                providers := List.push((provider.0, Tools.arrayAppend(provider.1, [_sid]), provider.2), providers); 
+                providers := List.push((provider.0, ArrayTool.append(provider.1, [_sid]), provider.2), providers); 
             };
             case(_){ assert(false); };
         };
@@ -1106,7 +1257,7 @@ shared(installMsg) actor class ICOracle() = this {
         switch(List.find(providers, func (t: (Provider, [SeriesId], [Principal])): Bool{ _account == t.0 })){
             case(?(provider)){ 
                 providers := List.filter(providers, func (t: (Provider,[SeriesId], [Principal])): Bool{ t.0 != _account });
-                providers := List.push((provider.0, provider.1, Tools.arrayAppend(provider.2, [_agent])), providers); 
+                providers := List.push((provider.0, provider.1, ArrayTool.append(provider.2, [_agent])), providers); 
             };
             case(_){ assert(false); };
         };
@@ -1125,9 +1276,9 @@ shared(installMsg) actor class ICOracle() = this {
         assert(_onlyOwner(msg.caller));
         providers := List.filter(providers, func (t: (Provider,[SeriesId], [Principal])): Bool{ t.0 != _account });
     };
-    public shared(msg) func setDexSupport(_dex: Text, _router: Principal) : async (){
+    public shared(msg) func setDexPair(_sid: SeriesId, _pairInfo: DexPair) : async (){
         assert(_onlyOwner(msg.caller));
-        dexs := Trie.put(dexs, keyt(_dex), Text.equal, _router).0;
+        dexPairs := Trie.put(dexPairs, keyn(_sid), Nat.equal, _pairInfo).0;
     };
     public shared(msg) func newSeriesInfo(_sid: SeriesId, _info: SeriesInfo): async Bool{
         assert(_onlyOwner(msg.caller));
@@ -1136,48 +1287,40 @@ shared(installMsg) actor class ICOracle() = this {
         if (_sid > index) { index := _sid };
         return true;
     };
-    public shared(msg) func updateSeriesInfo(_sid: SeriesId, _info: SeriesInfo): async Bool{
+    public shared(msg) func updateSeriesInfo(_sid: SeriesId, _info: SeriesInfo, _resetData: Bool): async Bool{
         assert(_onlyOwner(msg.caller));
         assert(Option.isSome(Trie.get(seriesInfo, keyn(_sid), Nat.equal)));
         seriesInfo := Trie.put(seriesInfo, keyn(_sid), Nat.equal, (_info, _getSeriesCreationTime(_sid))).0;
-        //if (_sid > index) { index := _sid };
+        if (_resetData){
+            seriesData2 := Trie.remove(seriesData2, keyn(_sid), Nat.equal).0;
+        };
         return true;
     };
     public shared(msg) func delSeriesData(_sid: SeriesId): async Bool{
         assert(_onlyOwner(msg.caller));
         assert(Option.isSome(Trie.get(seriesInfo, keyn(_sid), Nat.equal)));
         seriesInfo := Trie.remove(seriesInfo, keyn(_sid), Nat.equal).0;
-        seriesData := Trie.remove(seriesData, keyn(_sid), Nat.equal).0;
+        seriesData2 := Trie.remove(seriesData2, keyn(_sid), Nat.equal).0;
         return true;
     };
 
 
-    // DRC207 ICMonitor
-    /// DRC207 support
-    public func drc207() : async DRC207.DRC207Support{
-        return {
-            monitorable_by_self = true;
-            monitorable_by_blackhole = { allowed = false; canister_id = ?Principal.fromText("7hdtw-jqaaa-aaaak-aaccq-cai"); };
-            cycles_receivable = true;
-            timer = { enable = false; interval_seconds = null; }; 
-        };
-    };
-    /// canister_status
-    public func canister_status() : async DRC207.canister_status {
-        let ic : DRC207.IC = actor("aaaaa-aa");
-        await ic.canister_status({ canister_id = Principal.fromActor(this) });
-    };
     /// receive cycles
     public func wallet_receive(): async (){
         let amout = Cycles.available();
         let accepted = Cycles.accept(amout);
     };
-    /// timer tick
-    // public func timer_tick(): async (){
-    //     let f = _requestIcpXdr();
-    // };
 
     // http request
+    // public shared func http_request_update(request : ICHTTP.HttpRequest) : async ICHTTP.HttpResponse {
+    //     {
+    //     status_code = 200;
+    //     headers = [];
+    //     body = Text.encodeUtf8("Response to " # request.method # " request (update)");
+    //     streaming_strategy = null;
+    //     upgrade = null;
+    //     };
+    // };
     public query func http_request(req : ICHTTP.HttpRequest) : async ICHTTP.HttpResponse {
         switch (req.method, not Option.isNull(Array.find(req.headers, ICHTTP.isGzip)), req.url) {
         case ("GET", _, path) {
@@ -1208,12 +1351,12 @@ shared(installMsg) actor class ICOracle() = this {
                     response := "{\"error\": {\"code\": 400, \"message\": \"Unavailable data\"}}";
                 }else{
                     for ((k,v) in Trie.iter(s)){
-                        sids := Tools.arrayAppend(sids, [k]);
+                        sids := ArrayTool.append(sids, [k]);
                     };
                 };
             }else {
                 try{
-                    sids := Tools.arrayAppend(sids, [_textToNat(Text.replace(path, #text("/"), ""))]);
+                    sids := ArrayTool.append(sids, [_textToNat(Text.replace(path, #text("/"), ""))]);
                 }catch(e){
                     error := true; 
                     response := "{\"error\": {\"code\": 400, \"message\": \"Unavailable data\"}}";
@@ -1246,7 +1389,7 @@ shared(installMsg) actor class ICOracle() = this {
             };
             return {
                 status_code = status;
-                headers = [ ("content-type", "text/plain") ];
+                headers = [ ("content-type", "application/json") ];
                 body = Text.encodeUtf8(response);
                 streaming_strategy = null;
                 upgrade = null;
@@ -1270,12 +1413,12 @@ shared(installMsg) actor class ICOracle() = this {
     };
 
     // heartbeat
-    private stable var LastUpdated_IcpXdr: Nat = 0;
+    private var LastUpdated_IcpXdr: Nat = 0;
     private func _heartbeat_fetchIcpXdr() : async (){
         let hbid = Int.abs(Time.now()) / 600000000000; // 600s
         if (hbid > LastUpdated_IcpXdr and Int.abs(Time.now()) >= hbid * 600000000000 + 60000000000 ){ // 60s
             LastUpdated_IcpXdr := hbid;
-            await _requestIcpXdr();
+            await* _requestIcpXdr();
         };
     };
     public shared(msg) func test_heartbeat_fetchIcpXdr() : async (Nat){
@@ -1283,19 +1426,37 @@ shared(installMsg) actor class ICOracle() = this {
         await _heartbeat_fetchIcpXdr();
         return LastUpdated_IcpXdr;
     };
-    private stable var LastUpdated_FX: Nat = 0;
+    private var LastUpdated_dex: Nat = 0;
+    private func _heartbeat_fetchDex() : async (){
+        let hbid = Int.abs(Time.now()) / 180000000000; // 3mins
+        if (hbid > LastUpdated_dex and Int.abs(Time.now()) >= hbid * 180000000000 ){
+            LastUpdated_dex := hbid;
+            try{
+                await* _fetchICDex();
+            }catch(e){};
+            try{
+                await* _fetchICPSwap();
+            }catch(e){};
+        };
+    };
+    public shared(msg) func test_heartbeat_fetchDex() : async (Nat){
+        assert(_onlyOwner(msg.caller));
+        await _heartbeat_fetchDex();
+        return LastUpdated_dex;
+    };
+    private var LastUpdated_FX: Nat = 0;
     private stable var Retry_FX: Time.Time = 0;
     private func _heartbeat_fetchFX() : async (){
         let hbid = Int.abs(Time.now()) / 3600000000000; // 1h
         if (hbid > LastUpdated_FX and Int.abs(Time.now()) >= hbid * 3600000000000 + 60000000000 ){ // 60s
             LastUpdated_FX := hbid;
-            if ((await _fetchFX()).0 == 0){
+            if ((await* _fetchFX()).0 == 0){
                 Retry_FX := Time.now();
             };
         };
         if (Retry_FX > 0 and Time.now() > Retry_FX + 10000000000){ // 10s
             Retry_FX := 0;
-            ignore await _fetchFX();
+            ignore await* _fetchFX();
         };
     };
     public shared(msg) func test_heartbeat_fetchFX() : async (Nat){
@@ -1303,19 +1464,19 @@ shared(installMsg) actor class ICOracle() = this {
         await _heartbeat_fetchFX();
         return LastUpdated_FX;
     };
-    private stable var LastUpdated_BA: Nat = 0;
+    private var LastUpdated_BA: Nat = 0;
     private stable var Retry_BA: Time.Time = 0;
     private func _heartbeat_fetchBA() : async (){
         let hbid = Int.abs(Time.now()) / 600000000000; // 10min
         if (hbid > LastUpdated_BA){ // 
             LastUpdated_BA := hbid;
-            if ((await _fetchBA()).0 == 0){
+            if ((await* _fetchBA()).0 == 0){
                 Retry_BA := Time.now();
             };
         };
         if (Retry_BA > 0 and Time.now() > Retry_BA + 2000000000){ // 2s
             Retry_BA := 0;
-            ignore await _fetchBA();
+            ignore await* _fetchBA();
         };
     };
     public shared(msg) func test_heartbeat_fetchBA() : async (Nat){
@@ -1323,19 +1484,19 @@ shared(installMsg) actor class ICOracle() = this {
         await _heartbeat_fetchBA();
         return LastUpdated_BA;
     };
-    private stable var LastUpdated_CMC: Nat = 0;
+    private var LastUpdated_CMC: Nat = 0;
     private stable var Retry_CMC: Time.Time = 0;
     private func _heartbeat_fetchCMC() : async (){
         let hbid = Int.abs(Time.now()) / 3600000000000; // 1h
         if (hbid > LastUpdated_CMC){ // 
             LastUpdated_CMC := hbid;
-            if ((await _fetchCMC()).0 == 0){
+            if ((await* _fetchCMC()).0 == 0){
                 Retry_CMC := Time.now();
             };
         };
         if (Retry_CMC > 0 and Time.now() > Retry_CMC + 5000000000){ // 5s
             Retry_CMC := 0;
-            ignore await _fetchCMC();
+            ignore await* _fetchCMC();
         };
     };
     public shared(msg) func test_heartbeat_fetchCMC() : async (Nat){
@@ -1343,19 +1504,19 @@ shared(installMsg) actor class ICOracle() = this {
         await _heartbeat_fetchCMC();
         return LastUpdated_CMC;
     };
-    private stable var LastUpdated_CB: Nat = 0;
+    private var LastUpdated_CB: Nat = 0;
     private stable var Retry_CB: Time.Time = 0;
     private func _heartbeat_fetchCB() : async (){
         let hbid = Int.abs(Time.now()) / 3600000000000; // 1h
         if (hbid > LastUpdated_CB){ //
             LastUpdated_CB := hbid;
-            if ((await _fetchCB()).0 == 0){
+            if ((await* _fetchCB()).0 == 0){
                 Retry_CB := Time.now();
             };
         };
         if (Retry_CB > 0 and Time.now() > Retry_CB + 5000000000){ // 5s
             Retry_CB := 0;
-            ignore await _fetchCB();
+            ignore await* _fetchCB();
         };
     };
     public shared(msg) func test_heartbeat_fetchCB() : async (Nat){
@@ -1363,14 +1524,49 @@ shared(installMsg) actor class ICOracle() = this {
         await _heartbeat_fetchCB();
         return LastUpdated_CB;
     };
-    system func heartbeat() : async () {
-        await _heartbeat_fetchFX();
-        //await _heartbeat_fetchBA();
-        //await _heartbeat_fetchCMC();
-        await _heartbeat_fetchCB();
-        await _heartbeat_fetchIcpXdr();
+
+    private func timer_fun() : async (){
+        let f1 = _heartbeat_fetchDex();
+        let f2 = _heartbeat_fetchFX();
+        let f3 = _heartbeat_fetchIcpXdr();
+        let f4 = _heartbeat_fetchCB();
+        // try { await* _heartbeat_fetchDex(); }catch(e){};
+        // try { await* _heartbeat_fetchFX(); }catch(e){};
+        // try { await* _heartbeat_fetchIcpXdr(); }catch(e){};
+        // //try { await* _heartbeat_fetchBA(); }catch(e){};
+        // //try { await* _heartbeat_fetchCMC(); }catch(e){};
+        // try { await* _heartbeat_fetchCB(); }catch(e){};
+    };
+    private var timer_id: Nat = 0;
+    public shared(msg) func timer_start(_interval: Nat): async (){
+        assert(_onlyOwner(msg.caller));
+        Timer.cancelTimer(timer_id);
+        timer_id := Timer.recurringTimer(#seconds(_interval), timer_fun);
+    };
+    public shared(msg) func timer_stop(): async (){
+        assert(_onlyOwner(msg.caller));
+        Timer.cancelTimer(timer_id);
     };
 
-
+    system func preupgrade() {
+        Timer.cancelTimer(timer_id);
+    };
+    system func postupgrade() {
+        timer_id := Timer.recurringTimer(#seconds(60), timer_fun);
+        // if (Trie.size(seriesData2) == 0){
+        //     for ((sid, data) in Trie.iter(seriesData)){
+        //         for ((hid, item) in Trie.iter(data)){
+        //             seriesData2 := Trie.put2D(seriesData2, keyn(sid), Nat.equal, keyn(hid), Nat.equal, [item]);
+        //         };
+        //     };
+        // };
+        // if (Trie.size(requestLogs2) == 0){
+        //     for ((sid, data) in Trie.iter(requestLogs)){
+        //         for ((hid, item) in Trie.iter(data)){
+        //             requestLogs2 := Trie.put2D(requestLogs2, keyn(sid), Nat.equal, keyn(hid), Nat.equal, [item]);
+        //         };
+        //     };
+        // };
+    };
 
 };
