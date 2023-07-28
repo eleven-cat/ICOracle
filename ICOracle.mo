@@ -540,21 +540,23 @@ shared(installMsg) actor class ICOracle() = this {
             signature = null;
         };
         ignore _setData(provider, sid, req);
-        sid := 2;
-        info := _getSeriesInfo(sid);
-        assert(info.heartbeat > 0);
-        switch(_getDataItem(1000, _now())){ // XDR/USD
+        
+        let sid2: Nat = 2;
+        let info2 = _getSeriesInfo(sid2);
+        assert(info2.heartbeat > 0);
+        let infoXdr = _getSeriesInfo(1000); // 1000 : XDR/USD
+        switch(_getDataItem(1000, _now())){ 
             case(?(xdrUsd)){
-                req := {
+                let req2: RequestLog = {
                     request = { 
-                        value = req.request.value * xdrUsd.1 / 10000; 
-                        timestamp = Nat64.toNat(icpXdr.data.timestamp_seconds) / info.heartbeat * info.heartbeat; 
+                        value = req.request.value * xdrUsd.1 * (10 ** info2.decimals) / (10 ** (info.decimals + infoXdr.decimals)); 
+                        timestamp = Nat64.toNat(icpXdr.data.timestamp_seconds) / info2.heartbeat * info2.heartbeat; 
                     };
                     provider = provider;
                     time = _now();
                     signature = null;
                 };
-                ignore _setData(provider, sid, req);
+                ignore _setData(provider, sid2, req2);
             };
             case(_){};
         };
